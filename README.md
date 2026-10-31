@@ -1,5 +1,7 @@
 # risk-patch-loop
 
+**English** · [Français](README.fr.md)
+
 **Which container vulnerabilities actually matter on *your* host, is there a fix that really removes them, and can it be applied safely, with a human saying yes?**
 
 On the author's homelab, one night's scan returned 2,297 fixable HIGH/CRITICAL findings. That is not a to-do list. This tool turns it into one, using three things a scanner does not know: how exposed each container really is, whether a newer version really removes the finding, and what a safe update of one service looks like.
