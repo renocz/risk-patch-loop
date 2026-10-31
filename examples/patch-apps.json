@@ -1,0 +1,5 @@
+{
+  "_help": "Services that `rpl proposals` is ALLOWED to propose. route: host name tested through the reverse proxy after the update. codes: accepted HTTP statuses (401 = a route behind forward-auth answers 401 without a session). db: PostgreSQL container to dump before the update, or null. A service missing here is never proposed. Never list a VPN container or a service sharing its network.",
+  "myapp": {"route": "myapp.example.org", "codes": "200 301 302", "db": {"container": "myapp-db", "user": "myapp", "name": "myapp"}},
+  "dashboard": {"route": "dash.example.org", "codes": "401", "db": null}
+}

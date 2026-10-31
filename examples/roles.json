@@ -1,0 +1,5 @@
+{
+  "_help": "Container names. control_plane: a compromise opens everything else (identity provider, reverse proxy, tunnel, container management, admin tools). untrusted_input: the service reads files or data coming from third parties (archive, document, e-book, image parsers).",
+  "control_plane": ["traefik", "identity-provider", "portainer"],
+  "untrusted_input": ["paperless", "photo-library", "ebook-manager"]
+}

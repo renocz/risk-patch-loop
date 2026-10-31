@@ -1,0 +1,5 @@
+[
+  {"service": "myapp", "severity": "CRITICAL", "kev": false, "verdict": "A"},
+  {"service": "dashboard", "severity": "HIGH", "kev": false, "verdict": "R"},
+  {"service": "traefik", "severity": "HIGH", "kev": false, "verdict": "A"}
+]
