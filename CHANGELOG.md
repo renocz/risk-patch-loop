@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 (unreleased)
+## 0.9.0 (2026-11-02)
 
 First public cut of a tool used for one week on one host.
 
