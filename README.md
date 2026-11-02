@@ -43,7 +43,7 @@ scan ──► inventory ──► risk score ──► fix check ──► prop
 
 Built and used for one week on one Docker host (65 containers, Traefik, one owner). **Read [docs/results.md](docs/results.md) before trusting it**: the score agrees with its owner's verdicts 14 times out of 20 (a trivial "always defer" answer gets 13), the roles were tuned after seeing those verdicts, and the automatic rollback has never fired on a real service. It handles Docker Compose + Traefik, Docker Hub and ghcr.io.
 
-Tested: 198 automated tests against a fake Docker host (sequencing and refusals), run in CI on Python 3.9 and 3.12; a few behaviours were also checked by hand on real Docker (see the limits below).
+Tested: 203 automated tests against a fake Docker host (sequencing and refusals), run in CI on Python 3.9 and 3.12; a few behaviours were also checked by hand on real Docker (see the limits below).
 
 ## Known limits
 
