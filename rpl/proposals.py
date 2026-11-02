@@ -10,6 +10,7 @@ Otherwise it is listed with the reason. `rpl proposals --apply <service>` runs `
 """
 import hashlib
 import json
+import math
 import subprocess
 import sys
 import time
@@ -18,6 +19,7 @@ import urllib.request
 from . import config, fixcheck, risk
 
 VALIDITY_H = 36
+CLOCK_SKEW_S = 300      # a timestamp further in the future than this is not trusted (it would defeat the expiry)
 
 
 def new_reference(current, candidate, registry_digest):
@@ -123,6 +125,35 @@ def save(path, props, skipped, ts=None):
         json.dump(d, f, ensure_ascii=False)
 
 
+def _number(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def _strings(d, keys):
+    return isinstance(d, dict) and all(isinstance(d.get(k), str) for k in keys)
+
+
+def shape_problem(d):
+    """What is wrong with the SHAPE of a proposals file (a correct digest says nothing about it), or None."""
+    if not isinstance(d, dict):
+        return "the file is not a JSON object"
+    if not _number(d.get("ts")):
+        return "'ts' is missing or not a finite number"
+    if d["ts"] > time.time() + CLOCK_SKEW_S:
+        return "'ts' is in the future"
+    if not isinstance(d.get("proposals"), list) or not isinstance(d.get("not_proposed"), list):
+        return "'proposals' and 'not_proposed' must be lists"
+    for p in d["proposals"]:
+        if not _strings(p, ("id", "service", "compose", "from", "to", "why", "route", "codes")) or not _number(p.get("score")):
+            return "a proposal has a missing or mistyped field"
+        db = p.get("db")
+        if db is not None and not _strings(db, ("container", "user", "name")):
+            return f"proposal '{p['id']}' has a malformed 'db'"
+    if not all(_strings(n, ("image", "reason")) for n in d["not_proposed"]):
+        return "an entry of 'not_proposed' is malformed"
+    return None
+
+
 def load(path):
     """(data, None), or (None, reason to refuse)."""
     try:
@@ -134,6 +165,9 @@ def load(path):
         return None, "proposals file is unreadable: compute them again"
     if not isinstance(d, dict) or d.get("sha256") != digest(d):
         return None, "proposals file was modified after it was computed (or predates the digest): compute them again"
+    problem = shape_problem(d)
+    if problem:
+        return None, "proposals file is malformed (" + problem + "): compute them again"
     if (time.time() - d["ts"]) / 3600 > VALIDITY_H:
         return None, f"proposals are older than {VALIDITY_H} h, compute them again"
     return d, None
@@ -170,6 +204,9 @@ def main(argv):
             for n in d["not_proposed"]:
                 print(f"(not proposed) {n['image']}: {n['reason']}")
             return 0
+        if argv.index("--apply") + 1 >= len(argv):
+            print("REFUSED: --apply needs the name of a proposal (see --list)")
+            return 1
         svc = argv[argv.index("--apply") + 1]
         p = next((x for x in d["proposals"] if x["id"] == svc), None)
         if not p:

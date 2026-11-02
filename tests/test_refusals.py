@@ -238,5 +238,93 @@ class ApplyRefusals(unittest.TestCase):
         self.run_mock.assert_not_called()
 
 
+class HandMadeProposalsFile(unittest.TestCase):
+    """Council point 5: load() assumed d["ts"] was a number and the lists well formed. A file whose digest is correct but whose
+    content is malformed (hand-made, or written by another version) raised a Python exception instead of a refusal; a NaN or a
+    future timestamp even defeated the 36 h expiry."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"RPL_CONFIG": rpl_config(self.tmp.name)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.path = os.path.join(config.load()["state_dir"], "proposals.json")
+        os.makedirs(os.path.dirname(self.path))
+        run = mock.patch("subprocess.run", return_value=done(0))
+        self.run_mock = run.start()
+        self.addCleanup(run.stop)
+
+    def write(self, **content):
+        """A file with a CORRECT digest over whatever content is given (so only the shape can be wrong)."""
+        d = {"ts": time.time(), "proposals": [dict(PROPOSAL)], "not_proposed": []}
+        d.update(content)
+        for k in [k for k, v in d.items() if v is KeyError]:
+            del d[k]
+        d["sha256"] = proposals.digest(d)
+        with open(self.path, "w") as f:
+            json.dump(d, f)
+
+    def assert_refused(self, *argv):
+        for args in (["--apply", "app"], ["--list"]):
+            rc, out = captured(proposals.main, args)
+            self.assertEqual(rc, 1, (args, out))
+            self.assertIn("REFUSED", out)
+        self.run_mock.assert_not_called()
+
+    def test_well_formed_file_is_accepted(self):
+        self.write()
+        self.assertEqual(captured(proposals.main, ["--apply", "app"])[0], 0)
+
+    def test_timestamp_missing_or_not_a_finite_number(self):
+        for ts in (KeyError, "now", None, True, [1], float("nan"), float("inf"), float("-inf")):
+            with self.subTest(ts=ts):
+                self.write(ts=ts)
+                self.assert_refused()
+
+    def test_timestamp_in_the_future_does_not_defeat_the_expiry(self):
+        self.write(ts=time.time() + 10 * 365 * 24 * 3600)
+        self.assert_refused()
+
+    def test_proposals_of_the_wrong_type(self):
+        for bad in (KeyError, None, {}, "x", 3, [1], ["x"], [None]):
+            with self.subTest(proposals=bad):
+                self.write(proposals=bad)
+                self.assert_refused()
+
+    def test_not_proposed_of_the_wrong_type(self):
+        for bad in (KeyError, None, {}, "x", [1], [{"image": "x"}], [{"image": 1, "reason": "r"}]):
+            with self.subTest(not_proposed=bad):
+                self.write(not_proposed=bad)
+                self.assert_refused()
+
+    def test_proposal_with_a_missing_or_mistyped_field(self):
+        for key, bad in (("id", KeyError), ("service", None), ("compose", 3), ("from", KeyError), ("to", ["x"]), ("route", None), ("codes", 200),
+                         ("why", KeyError), ("score", "high"), ("score", KeyError), ("db", "x"), ("db", {"container": "c"}), ("db", {"container": 1, "user": "u", "name": "n"})):
+            with self.subTest(field=key, value=bad):
+                p = dict(PROPOSAL)
+                p.pop(key) if bad is KeyError else p.update({key: bad})
+                self.write(proposals=[p])
+                self.assert_refused()
+
+    def test_top_level_that_is_not_an_object(self):
+        for text in ("[]", "null", "3", '"x"'):
+            with self.subTest(text=text):
+                with open(self.path, "w") as f:
+                    f.write(text)
+                self.assert_refused()
+
+    def test_apply_without_a_service_name_is_a_refusal_not_an_index_error(self):
+        self.write()
+        rc, out = captured(proposals.main, ["--apply"])
+        self.assertEqual(rc, 1)
+        self.assertIn("REFUSED", out)
+        self.run_mock.assert_not_called()
+
+    def test_proposal_without_a_database_is_valid(self):
+        self.write(proposals=[dict(PROPOSAL, db=None)])
+        self.assertEqual(captured(proposals.main, ["--apply", "app"])[0], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
