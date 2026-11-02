@@ -18,6 +18,12 @@ Integration tests for the parts 0.9.0 left untested, the defects they exposed, a
 - `rpl fixcheck`: tag lists are read across pages, an empty list is UNKNOWN instead of "no newer version", and `registry_detail` says what failed.
 - `examples/rpl.json` is now in the repository.
 
+### Fixed after the final council review of the merged code
+- `rpl patch`: an unexpected error or an interruption (Ctrl-C) after the pin restores the compose file, prints `ABORTED ... CHECK BY HAND` and journals `aborted: CHECK BY HAND`.
+- `rpl patch` refuses, before any change, a service that has no running container: a rollback could not be proven to restore it.
+- `rpl patch`: the resolved image of every other service must be unchanged by the pin (a shared YAML anchor would change another service's image too); otherwise the old file is restored.
+- A route check whose `curl` exited non-zero is not an answer, even if it printed an accepted status.
+
 ### Fixed after review
 - `rpl patch`: the dry run must show exactly one recreation, of the service's own container (zero, two, another service or unreadable output are refused and the compose file is restored).
 - `rpl patch`: the pin is bound to the requested service (Compose must resolve its image to `--old`, the edited line must lie in its block, `build:` services are refused).

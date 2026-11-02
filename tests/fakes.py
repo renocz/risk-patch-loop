@@ -171,7 +171,14 @@ class FakeHost:
 
     def __init__(self, compose_file, service="app", running_image=None, *, unhealthy_images=(), route_codes=None,
                  up_fails_for=(), up_noop_for=(), vpn=False, network_mode="", config_ok=True, config_rejects=(), dry_recreates=None,
-                 dry_rc=0, dump_ok=True, snapshot_rc=0, dry_prefix="", container=None, dry_raw=None, rebuilt_on_up=None):
+                 dry_rc=0, dump_ok=True, snapshot_rc=0, dry_prefix="", container=None, dry_raw=None, rebuilt_on_up=None,
+                 stopped=False, shared_image_with=(), curl_rc=None, raise_on_up=None):
+        """stopped: the container exists but is not running until the first `compose up` (`ps -a` sees it, `ps` does not).
+        shared_image_with: other services whose resolved image follows the service under test (a shared YAML anchor).
+        curl_rc: image -> exit code curl returns while that image runs (the status it prints is still route_codes').
+        raise_on_up: an exception raised by the first `compose up` that is not a dry run."""
+        self.stopped, self.shared_image_with = stopped, set(shared_image_with)
+        self.curl_rc, self.raise_on_up = curl_rc or {}, raise_on_up
         self.compose_file, self.service = compose_file, service
         self.container = container or service
         self.running = running_image or self._file_image()
@@ -254,9 +261,12 @@ class FakeHost:
             if not self.config_ok:
                 return done(1, "", "cannot load")
             services = {}
-            for name, info in parse_services(self.compose_file).items():
+            parsed = parse_services(self.compose_file)
+            for name, info in parsed.items():
                 svc = {"network_mode": self.network_mode if name == self.service else ""}
-                if info["image"] is not None:
+                if name in self.shared_image_with:
+                    svc["image"] = (parsed.get(self.service) or {}).get("image")
+                elif info["image"] is not None:
                     svc["image"] = info["image"]
                 if info["build"]:
                     svc["build"] = {"context": ".", "dockerfile": "Dockerfile"}
@@ -270,6 +280,10 @@ class FakeHost:
         if k == "up":
             image = self._file_image()
             self.up_images.append(image)
+            self.stopped = False
+            if self.raise_on_up is not None:
+                error, self.raise_on_up = self.raise_on_up, None
+                raise error
             if image in self.up_fails_for:
                 return done(1, "", f"Error response from daemon: manifest for {image} not found")
             if image in self.rebuilt_on_up:
@@ -278,7 +292,8 @@ class FakeHost:
                 self.running = image
             return done(0, "", f" Container {self.container}  Started")
         if k == "ps":
-            return done(0, "cid-1\n" if self.running else "")
+            exists = self.running and (self.stopped is False or "-a" in c)
+            return done(0, "cid-1\n" if exists else "")
         if k == "inspect":
             healthy = self.running not in self.unhealthy_images
             return done(0, json.dumps([{"Name": "/" + self.container, "Image": self.ids.get(self.running) or image_id(self.running), "Config": {"Image": self.running},
@@ -287,7 +302,7 @@ class FakeHost:
             code = self.route_codes.get(self.running, 200)
             if isinstance(code, list):
                 code = code.pop(0) if len(code) > 1 else code[0]
-            return done(0, str(code))
+            return done(self.curl_rc.get(self.running, 0), str(code))
         raise AssertionError(f"FakeHost: unplanned command {c}")
 
 

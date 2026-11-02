@@ -58,7 +58,8 @@ class SuccessfulUpdate(PatchCase):
         host = self.host()
         rc, out = self.run_patch(host)
         self.assertEqual((rc, out.strip().splitlines()[-1]), (0, "OK"), out)
-        self.assertEqual(host.kinds(), ["inspect-config", "snapshot", "dump", "dump-copy", "dump-verify", "validate", "dry-run", "ps", "inspect", "ps", "inspect", "up", "ps", "inspect", "ps", "inspect", "route"])
+        self.assertEqual(host.kinds(), ["inspect-config", "ps", "inspect", "snapshot", "dump", "dump-copy", "dump-verify", "inspect-config", "validate", "inspect-config",
+                                        "dry-run", "ps", "inspect", "up", "ps", "inspect", "ps", "inspect", "route"])
 
     def test_new_image_is_pinned_and_running_and_the_old_file_is_kept(self):
         host = self.host()
@@ -187,7 +188,7 @@ class AutomaticRollback(PatchCase):
     def test_snapshot_and_dump_happen_before_the_failed_update(self):
         host = self.host(unhealthy_images={NEW})
         self.run_patch(host)
-        self.assertEqual(host.kinds()[:6], ["inspect-config", "snapshot", "dump", "dump-copy", "dump-verify", "validate"])
+        self.assertEqual(host.kinds()[:9], ["inspect-config", "ps", "inspect", "snapshot", "dump", "dump-copy", "dump-verify", "inspect-config", "validate"])
 
     def test_rollback_that_itself_fails_is_flagged_for_a_human(self):
         host = self.host(unhealthy_images={NEW, OLD})
@@ -196,6 +197,52 @@ class AutomaticRollback(PatchCase):
         self.assertEqual(self.compose_text(), self.original)
         self.assertEqual(self.journal()[-1]["result"], "rollback FAILED: CHECK BY HAND")
         self.assertNotIn("rollback ok", json.dumps(self.journal()))
+
+
+class SecondRoundOfTheFinalCouncilReview(PatchCase):
+    """Four real findings of the council's review of the merged code, each with a test that failed first."""
+
+    def test_an_exception_after_the_pin_restores_the_compose_file_and_says_check_by_hand(self):
+        host = self.host(raise_on_up=RuntimeError("the host went away"))
+        with self.assertRaises(RuntimeError):
+            self.run_patch(host)
+        self.assertEqual(self.compose_text(), self.original, "the compose file must not stay pinned to an image nobody checked")
+        self.assertEqual(self.journal()[-1]["result"], "aborted: CHECK BY HAND")
+
+    def test_an_interruption_after_the_pin_is_handled_the_same_way(self):
+        host = self.host(raise_on_up=KeyboardInterrupt())
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_patch(host)
+        self.assertEqual(self.compose_text(), self.original)
+        self.assertEqual(self.journal()[-1]["result"], "aborted: CHECK BY HAND")
+
+    def test_a_service_with_no_running_container_is_refused_before_anything_changes(self):
+        host = self.host(stopped=True)
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("REFUSED", out)
+        self.assertIn("no running container", out)
+        self.assertEqual(self.compose_text(), self.original)
+        self.assertEqual(host.up_images, [], "nothing was recreated")
+        self.assertNotIn("snapshot", host.kinds(), "refused before the snapshot too")
+
+    def test_a_pin_that_also_changes_another_services_image_is_undone(self):
+        """A shared YAML anchor: the line that was edited belongs to the service, but another service resolves to it too."""
+        self.compose = write_compose_text(self.dir, f"services:\n  app:\n    image: {OLD}\n  worker:\n    image: {OLD}\n")
+        self.original = self.compose_text()
+        host = self.host(shared_image_with={"worker"})
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("worker", out)
+        self.assertEqual(self.compose_text(), self.original)
+        self.assertEqual(host.up_images, [], "never recreated")
+
+    def test_a_status_code_printed_by_a_failed_curl_is_not_an_answer(self):
+        host = self.host(curl_rc={NEW: 18})            # curl says 200 but exits "partial transfer"
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("ROLLBACK", out)
+        self.assertEqual(self.journal()[-1]["result"], "rollback ok")
 
 
 class DefectRegressions(PatchCase):
@@ -305,7 +352,11 @@ class DryRunMustShowExactlyOneRecreation(PatchCase):
     def test_no_container_exists_for_the_service_is_refused(self):
         host = self.host(dry_recreates=["app"])
         host.running = None                                    # `ps -a -q` finds nothing
-        self.assert_refused(host, *self.run_patch(host))
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no running container", out, "refused before any change, since the rollback could not be verified")
+        self.assertEqual(self.compose_text(), self.original)
+        self.assertEqual(host.up_images, [])
 
 
 class RollbackAndSuccessAreVerifiedByImage(PatchCase):

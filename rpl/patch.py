@@ -207,11 +207,25 @@ def route_ok(url, route_host, codes, timeout, host=HOST):
     end = host.now() + timeout
     code = "?"
     while host.now() < end:
-        code = host.run(["curl", "-sk", "-o", "/dev/null", "-m", "15", "-H", f"Host: {route_host}", "-w", "%{http_code}", url]).stdout.strip()
-        if code in codes:
+        r = host.run(["curl", "-sk", "-o", "/dev/null", "-m", "15", "-H", f"Host: {route_host}", "-w", "%{http_code}", url])
+        code = r.stdout.strip()
+        if r.returncode == 0 and code in codes:            # a status printed by a curl that then failed is not an answer
             return True, code
+        if r.returncode:
+            code = f"{code or '-'} (curl exit {r.returncode})"
         host.sleep(5)
     return False, code
+
+
+def service_images(compose_file, host=HOST):
+    """{service: image as `docker compose config` resolves it} for EVERY service, or None when the file cannot be read."""
+    cfg = compose(compose_file, "config", "--format", "json", host=host)
+    if cfg.returncode:
+        return None
+    try:
+        return {name: svc.get("image") for name, svc in json.loads(cfg.stdout).get("services", {}).items()}
+    except (ValueError, AttributeError):
+        return None
 
 
 def journal(cfg, entry):
@@ -260,6 +274,12 @@ def main(argv, host=HOST):
     if a.dry:
         print("(dry) planned: snapshot, " + ("database dump, " if a.db_container else "") + "pin, dry run, recreate, check, rollback on failure")
         return 0
+    # the container that runs now: without it a rollback could not be proven to restore it (same reference AND same image ID)
+    before = running_image(a.compose, a.service, host)
+    if before is None:
+        print(f"REFUSED: service '{a.service}' has no running container (or it cannot be inspected): "
+              "a rollback could not be verified, start it first")
+        return 1
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
     # 1. snapshot
     if cfg.get("snapshot_command"):
@@ -284,9 +304,35 @@ def main(argv, host=HOST):
             return 1
         print(f"dump: {os.path.join(d, dump)} ({os.path.getsize(os.path.join(d, dump)) // 1048576} MB, {len(r3.stdout.splitlines())} objects readable): delete within 7 days")
     # 3. pin
+    images_before = service_images(a.compose, host)
     ok, msg, backup = pin(a.compose, a.old, a.new, apply=True, host=host, service=a.service)
     print(msg)
     if not ok:
+        return 1
+    try:
+        return _after_pin(a, cfg, codes, backup, before, images_before, host)
+    except BaseException:
+        # an unexpected error or an interruption (Ctrl-C) between the pin and the end: never leave the file pinned to an
+        # image nobody checked. The service itself may already run the new image, so a human must look.
+        shutil.copy2(backup, a.compose)
+        print(f"ABORTED by an unexpected error or an interruption: compose file restored from {backup}; the service may already run "
+              f"{a.new}: CHECK BY HAND")
+        try:
+            journal(cfg, {"ts": host.now(), "service": a.service, "from": a.old, "to": a.new, "result": "aborted: CHECK BY HAND"})
+        except Exception:
+            pass
+        raise
+
+
+def _after_pin(a, cfg, codes, backup, before, images_before, host):
+    """Steps 3b to 6: the pinned file is on disk; any return here leaves it either confirmed or restored."""
+    # 3b. the pin must have changed THIS service's image and nothing else (a shared YAML anchor would change another service's too)
+    images_after = service_images(a.compose, host)
+    others = [n for n, img in (images_before or {}).items() if n != a.service and (images_after or {}).get(n) != img]
+    if images_before is None or images_after is None or others:
+        shutil.copy2(backup, a.compose)
+        print("FAILED: the edit changes " + (f"the image of another service ({', '.join(sorted(others))})" if others else "a file that can no longer be read")
+              + ": old file restored")
         return 1
     # 4. dry run: only this service may be recreated
     dry = compose(a.compose, "up", "-d", "--no-deps", "--dry-run", a.service, host=host)
@@ -303,7 +349,6 @@ def main(argv, host=HOST):
               f"({', '.join(sorted(expected)) or 'no container found for it'}); it showed {', '.join(sorted(recreated)) or 'none'}: old file restored")
         return 1
     # 5. recreate and check
-    before = running_image(a.compose, a.service, host)
     u = compose(a.compose, "up", "-d", "--no-deps", a.service, host=host)
     print((u.stdout + u.stderr).strip()[-300:])
     img = None
