@@ -36,6 +36,8 @@ scan ──► inventaire ──► score de risque ──► vérif. du correct
 
 - **J'ai Docker Compose derrière Traefik et je veux l'essayer :** le [démarrage rapide](#démarrage-rapide), puis les [fichiers à écrire à la main](#fichiers-à-écrire-à-la-main-voir-examples).
 - **Je veux savoir à quoi me fier :** les [limites connues](#limites-connues), puis [docs/results.md](docs/results.md) (en anglais) : ce qui a été mesuré, ce qui ne l'a pas été, et les défauts de l'outil à sa première utilisation sur un vrai hôte.
+- **Je dirige ou je gère une infra et je veux l'essentiel :** [docs/fr/pour-les-dirigeants-it.md](docs/fr/pour-les-dirigeants-it.md), cinq minutes, aucun code.
+- **J'ai des questions (différence avec Trivy, Renovate, Watchtower, retour arrière, données) :** la [FAQ](docs/fr/faq.md).
 - **Je veux voir comment il décide :** [docs/design.md](docs/design.md) (en anglais : la boucle, les décisions, les limites).
 - **Un agent IA pilote mon infrastructure :** donnez-lui les étapes en lecture seule et gardez `--apply` derrière une approbation qu'il ne peut pas s'accorder lui-même, voir [Avec un agent IA](#avec-un-agent-ia).
 
@@ -119,6 +121,8 @@ Si un agent pilote votre infrastructure, donnez-lui les étapes en lecture seule
 
 - [SECURITY.md](SECURITY.md) : signaler une faille, ce que l'outil fait et ne fait pas (en anglais)
 - [CONTRIBUTING.md](CONTRIBUTING.md) : lancer les tests et les règles (bibliothèque standard seule, chiffres réels et limites écrites) (en anglais)
+- [docs/fr/faq.md](docs/fr/faq.md) : les questions probables, avec des réponses chiffrées
+- [docs/fr/pour-les-dirigeants-it.md](docs/fr/pour-les-dirigeants-it.md) : l'essentiel pour un responsable, en cinq minutes
 - [docs/design.md](docs/design.md) : la boucle, les décisions, les limites (en anglais)
 - [docs/results.md](docs/results.md) : ce qui a été mesuré, ce qui ne l'a pas été, les défauts trouvés à l'usage (en anglais)
 

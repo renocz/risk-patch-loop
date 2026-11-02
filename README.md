@@ -35,6 +35,8 @@ scan ──► inventory ──► risk score ──► fix check ──► prop
 ## Start here: pick your path
 
 - **I run Docker Compose behind Traefik and want to try it:** the [quick start](#quick-start), then the [files you write by hand](#files-you-write-by-hand-see-examples).
+- **I run or manage infrastructure and want the short version:** [docs/for-it-leaders.md](docs/for-it-leaders.md), five minutes, no code ([version française](docs/fr/pour-les-dirigeants-it.md)).
+- **I have questions** (how it differs from Trivy, Renovate or Watchtower, the rollback, what leaves the machine): the [FAQ](docs/faq.md) ([en français](docs/fr/faq.md)).
 - **I want to know what to trust:** [known limits](#known-limits), then [docs/results.md](docs/results.md): what was measured, what was not, and the defects the tool had when it was first used on a real host.
 - **I want to see how it decides:** [docs/design.md](docs/design.md) (the loop, the decisions, the limits).
 - **An AI agent drives my infrastructure:** give it the read-only steps and keep `--apply` behind an approval it cannot grant itself, see [With an AI agent](#with-an-ai-agent).
@@ -119,6 +121,8 @@ If an agent drives your infrastructure, give it the read-only steps and keep `--
 
 - [SECURITY.md](SECURITY.md): reporting a vulnerability, what the tool does and does not do
 - [CONTRIBUTING.md](CONTRIBUTING.md): running the tests and the rules (standard library only, real numbers and written limits)
+- [docs/faq.md](docs/faq.md): the questions I expect, with numbers in the answers
+- [docs/for-it-leaders.md](docs/for-it-leaders.md): the short version for someone who manages infrastructure
 - [docs/design.md](docs/design.md): the loop, the decisions, the limits
 - [docs/results.md](docs/results.md): what was measured, what was not, the defects found by using it
 
