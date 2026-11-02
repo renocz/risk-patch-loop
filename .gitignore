@@ -6,3 +6,4 @@ dist/
 rpl.json
 state/
 *.bak-*
+!examples/rpl.json
