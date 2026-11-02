@@ -238,5 +238,79 @@ class DefectRegressions(PatchCase):
         self.assertIn("dry run would recreate ['app']", out)
 
 
+class InputValidation(PatchCase):
+    """Defect 3: nothing checked the names handed to `docker` / `compose`. They come from files the owner maintains, so the risk is
+    low, but a value with a space or a newline was passed through, a name could be given as '--service=--privileged' (argparse only
+    blocks the two-word form), and a value with a newline became extra lines of the compose file."""
+
+    BASE = ["--route", "r.example.test", "--codes", "200"]
+
+    def go(self, host, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            try:
+                rc = patch.main(argv, host)
+            except SystemExit as e:                      # argparse's own refusal
+                rc = e.code
+        return rc, out.getvalue()
+
+    def argv(self, **over):
+        v = {"--compose": self.compose, "--service": "app", "--old": OLD, "--new": NEW, "--db-container": "app-db-1", "--db-user": "app", "--db-name": "app"}
+        v.update(over)
+        return [x for k, val in v.items() if val is not None for x in (k, val)] + self.BASE
+
+    def assert_refused(self, host, rc, out):
+        self.assertNotEqual(rc, 0, out)
+        self.assertEqual(self.compose_text(), self.original)
+        self.assertEqual(host.up_images, [])
+        self.assertNotIn("snapshot", host.kinds())
+
+    def test_invalid_service_names_are_refused(self):
+        for bad in ("--privileged", "-d", "app; reboot", "app name", "../app", "", "app\n"):
+            with self.subTest(service=bad):
+                host = self.host()
+                self.assert_refused(host, *self.go(host, self.argv(**{"--service": bad})))
+
+    def test_invalid_database_names_are_refused(self):
+        for flag in ("--db-container", "--db-user", "--db-name"):
+            for bad in ("--help", "x y", "a;b", "n\nm"):
+                with self.subTest(flag=flag, value=bad):
+                    host = self.host()
+                    self.assert_refused(host, *self.go(host, self.argv(**{flag: bad})))
+
+    def test_equals_form_cannot_smuggle_an_option(self):
+        host = self.host()
+        argv = ["--compose", self.compose, "--service=--privileged", "--old", OLD, "--new", NEW] + self.BASE
+        rc, out = self.go(host, argv)
+        self.assert_refused(host, rc, out)
+        self.assertIn("REFUSED", out)
+
+    def test_database_options_go_together(self):
+        host = self.host()
+        rc, out = self.go(host, self.argv(**{"--db-user": None, "--db-name": None}))
+        self.assert_refused(host, rc, out)
+        self.assertIn("REFUSED", out)
+
+    def test_image_reference_with_a_newline_cannot_inject_compose_lines(self):
+        host = self.host()
+        rc, out = self.go(host, self.argv(**{"--new": NEW + "\n    privileged: true"}))
+        self.assert_refused(host, rc, out)
+        self.assertIn("REFUSED", out)
+
+    def test_service_missing_from_the_compose_file_is_refused(self):
+        host = self.host()
+        rc, out = self.go(host, self.argv(**{"--service": "typo"}))
+        self.assertEqual(rc, 1, out)
+        self.assertIn("not defined", out)
+        self.assertEqual(host.kinds(), ["inspect-config"])
+        self.assertEqual(self.compose_text(), self.original)
+
+    def test_valid_names_with_dots_dashes_and_underscores_still_work(self):
+        self.compose = write_compose(self.dir, OLD, service="my_app-2.web")
+        host = self.host(service="my_app-2.web")
+        rc, out = self.go(host, self.argv(**{"--service": "my_app-2.web", "--compose": self.compose, "--db-container": None, "--db-user": None, "--db-name": None}))
+        self.assertEqual(rc, 0, out)
+
+
 if __name__ == "__main__":
     unittest.main()

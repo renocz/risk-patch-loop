@@ -23,6 +23,8 @@ import time
 from . import config
 
 REFUSED_NAMES = ("gluetun",)
+NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")                      # Docker / Compose / PostgreSQL identifiers
+IMAGE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@+-]*$")             # no whitespace, no newline, nothing a YAML line could carry
 RECREATE = re.compile(r"Container\s+(\S+)\s+Recreate")     # "[DRY-RUN MODE - ]Container <name>  Recreate[d|ing]"
 
 
@@ -79,6 +81,23 @@ def pin(compose_file, old, new, apply=False, host=HOST):
 
 
 # ---- checks --------------------------------------------------------------------------------------------------------
+
+def invalid_arguments(a):
+    """A reason to refuse the arguments before anything is run, or None."""
+    for flag, value, rx in (("--service", a.service, NAME), ("--db-container", a.db_container, NAME), ("--db-user", a.db_user, NAME),
+                            ("--db-name", a.db_name, NAME), ("--old", a.old, IMAGE_REF), ("--new", a.new, IMAGE_REF)):
+        if value is not None and not rx.match(value):
+            return f"{flag} {value!r} is not a valid {'image reference' if rx is IMAGE_REF else 'name'}"
+    given = [a.db_container, a.db_user, a.db_name]
+    if any(given) and not all(given):
+        return "--db-container, --db-user and --db-name go together"
+    return None
+
+
+def service_defined(compose_file, service, host=HOST):
+    cfg = compose(compose_file, "config", "--format", "json", host=host)
+    return cfg.returncode == 0 and service in json.loads(cfg.stdout).get("services", {})
+
 
 def shares_vpn_network(compose_file, service, host=HOST):
     cfg = compose(compose_file, "config", "--format", "json", host=host)
@@ -141,9 +160,16 @@ def main(argv, host=HOST):
     a = p.parse_args(argv)
     cfg = config.load()
     codes = a.codes.split()
+    reason = invalid_arguments(a)
+    if reason:
+        print("REFUSED: " + reason)
+        return 1
     if shares_vpn_network(a.compose, a.service, host):
         print("REFUSED: VPN container or a service sharing its network: dedicated procedure and an explicit decision required")
         return 3
+    if not service_defined(a.compose, a.service, host):
+        print(f"REFUSED: service '{a.service}' is not defined in {a.compose}")
+        return 1
     ok, msg, _ = pin(a.compose, a.old, a.new, host=host)
     print(msg)
     if not ok:
