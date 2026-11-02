@@ -14,13 +14,6 @@ In one minute:
 
 It is a proof of concept built and used for a week on one Docker host, with its limits [written down, not hidden](#known-limits). It is for someone who is comfortable reading 1,000 lines of Python, not a product.
 
-## Start here: pick your path
-
-- **I run Docker Compose behind Traefik and want to try it:** the [quick start](#quick-start), then the [files you write by hand](#files-you-write-by-hand-see-examples).
-- **I want to know what to trust:** [known limits](#known-limits), then [docs/results.md](docs/results.md): what was measured, what was not, and the defects the tool had when it was first used on a real host.
-- **I want to see how it decides:** [docs/design.md](docs/design.md) (the loop, the decisions, the limits).
-- **An AI agent drives my infrastructure:** give it the read-only steps and keep `--apply` behind an approval it cannot grant itself, see [With an AI agent](#with-an-ai-agent).
-
 ## The loop in one picture
 
 Every night, read-only: rpl reads four things a scanner alone does not combine. After your yes, one service is updated, and if the check fails the old image comes back.
@@ -38,6 +31,13 @@ scan ──► inventory ──► risk score ──► fix check ──► prop
 - **A fix is proven before it is proposed.** The candidate version is scanned *from the registry* (nothing is pulled). If the maintainer has not published a rebuilt image, the answer is "no fix", not a version bump that changes nothing.
 - **One service at a time.** Snapshot, database dump, pinned image, dry run, recreate, health and route check, and an automatic rollback if the check fails. A VPN container and the services behind it are refused.
 - **Nothing happens without a human.** The tool prepares proposals; applying one is a separate, explicit command.
+
+## Start here: pick your path
+
+- **I run Docker Compose behind Traefik and want to try it:** the [quick start](#quick-start), then the [files you write by hand](#files-you-write-by-hand-see-examples).
+- **I want to know what to trust:** [known limits](#known-limits), then [docs/results.md](docs/results.md): what was measured, what was not, and the defects the tool had when it was first used on a real host.
+- **I want to see how it decides:** [docs/design.md](docs/design.md) (the loop, the decisions, the limits).
+- **An AI agent drives my infrastructure:** give it the read-only steps and keep `--apply` behind an approval it cannot grant itself, see [With an AI agent](#with-an-ai-agent).
 
 ## Status: v0.9, one host, honest numbers
 

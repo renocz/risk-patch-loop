@@ -14,13 +14,6 @@ En une minute :
 
 C'est une preuve de concept construite et utilisée pendant une semaine sur un hôte Docker, dont les limites sont [écrites, pas cachées](#limites-connues). Elle s'adresse à qui accepte de lire 1 000 lignes de Python, pas à un produit.
 
-## Par où commencer
-
-- **J'ai Docker Compose derrière Traefik et je veux l'essayer :** le [démarrage rapide](#démarrage-rapide), puis les [fichiers à écrire à la main](#fichiers-à-écrire-à-la-main-voir-examples).
-- **Je veux savoir à quoi me fier :** les [limites connues](#limites-connues), puis [docs/results.md](docs/results.md) (en anglais) : ce qui a été mesuré, ce qui ne l'a pas été, et les défauts de l'outil à sa première utilisation sur un vrai hôte.
-- **Je veux voir comment il décide :** [docs/design.md](docs/design.md) (en anglais : la boucle, les décisions, les limites).
-- **Un agent IA pilote mon infrastructure :** donnez-lui les étapes en lecture seule et gardez `--apply` derrière une approbation qu'il ne peut pas s'accorder lui-même, voir [Avec un agent IA](#avec-un-agent-ia).
-
 ## La boucle en une image
 
 Chaque nuit, en lecture seule : rpl lit quatre choses qu'un scanner seul ne combine pas. Après votre oui, un service est mis à jour, et si le contrôle échoue l'ancienne image revient.
@@ -38,6 +31,13 @@ scan ──► inventaire ──► score de risque ──► vérif. du correct
 - **Un correctif est prouvé avant d'être proposé.** La version candidate est scannée *depuis le registre* (rien n'est téléchargé). Si le mainteneur n'a pas publié d'image reconstruite, la réponse est « pas de correctif », pas un changement de tag qui ne change rien.
 - **Un service à la fois.** Instantané, sauvegarde de base de données, image épinglée, essai à blanc, recréation, contrôle de santé et d'une route, retour arrière automatique si le contrôle échoue. Un conteneur VPN et les services derrière lui sont refusés.
 - **Rien ne se passe sans un humain.** L'outil prépare des propositions ; en appliquer une est une commande séparée et explicite.
+
+## Par où commencer
+
+- **J'ai Docker Compose derrière Traefik et je veux l'essayer :** le [démarrage rapide](#démarrage-rapide), puis les [fichiers à écrire à la main](#fichiers-à-écrire-à-la-main-voir-examples).
+- **Je veux savoir à quoi me fier :** les [limites connues](#limites-connues), puis [docs/results.md](docs/results.md) (en anglais) : ce qui a été mesuré, ce qui ne l'a pas été, et les défauts de l'outil à sa première utilisation sur un vrai hôte.
+- **Je veux voir comment il décide :** [docs/design.md](docs/design.md) (en anglais : la boucle, les décisions, les limites).
+- **Un agent IA pilote mon infrastructure :** donnez-lui les étapes en lecture seule et gardez `--apply` derrière une approbation qu'il ne peut pas s'accorder lui-même, voir [Avec un agent IA](#avec-un-agent-ia).
 
 ## État : v0.9, un hôte, des chiffres honnêtes
 
