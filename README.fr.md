@@ -19,6 +19,28 @@ scan ──► inventaire ──► score de risque ──► vérif. du correct
 
 Construit et utilisé pendant une semaine sur un hôte Docker (65 conteneurs, Traefik, un propriétaire). **Lisez [docs/results.md](docs/results.md) avant de lui faire confiance** (en anglais) : le score est d'accord avec les verdicts de son propriétaire 14 fois sur 20 (une réponse triviale « toujours différer » en obtient 13), les rôles ont été réglés après avoir vu ces verdicts, et le retour arrière automatique n'a jamais été déclenché en production. Il gère Docker Compose + Traefik, Docker Hub et ghcr.io. C'est une preuve de concept pour qui accepte de lire 1 000 lignes de Python, pas un produit.
 
+## Limites connues
+
+Reprises de [docs/results.md](docs/results.md) (en anglais) ; aucune n'est cachée, aucune n'est encore corrigée.
+
+- **Un seul hôte.** Tout a été mesuré sur un homelab (65 conteneurs, un propriétaire, une semaine). Aucun deuxième hôte ne l'a fait tourner.
+- **Traefik seulement.** L'exposition vient des labels Traefik. Un autre reverse proxy, ou des routes définies dans un fichier, seront lus comme « non routé ».
+- **Docker Hub et ghcr.io seulement.** Tout autre registre donne « UNKNOWN », jamais une supposition.
+- **Le retour arrière automatique n'a jamais été déclenché en production.** Toutes les vraies mises à jour ont passé leur contrôle. Le retour arrière est couvert par des tests déterministes contre un *faux* hôte Docker (fichier compose restauré, ancienne image recréée, résultat journalisé), pas par une vraie panne sur un vrai hôte. À considérer comme non prouvé tant qu'il n'a pas été exercé.
+- **Les tests n'exécutent ni vrai Docker, ni Compose, ni Trivy, ni registre réel.** Ils prouvent l'enchaînement et les refus ; ils ne peuvent pas prouver que la vraie sortie de Compose ressemble à ce que l'analyseur attend.
+- **Le score est un classement, pas un verdict.** Il est d'accord avec son propriétaire 14 fois sur 20 (la réponse triviale « toujours différer » : 13), sur vingt cas, avec des rôles choisis après avoir vu les verdicts. Aucun taux de faux négatifs n'a été mesuré.
+- **Une mise à jour en bonne santé mais cassée passe.** Le contrôle prouve que le conteneur est sain et qu'une route répond, pas que l'application fonctionne.
+- **Le retour arrière rétablit l'image, pas les données.** Une base migrée par la nouvelle version a besoin de la sauvegarde ou de l'instantané.
+- **Les conteneurs VPN sont reconnus par leur nom** (« gluetun »), pas par ce qu'ils font.
+
+## Feuille de route vers la 1.0
+
+La 1.0 sort quand les trois conditions sont remplies, chacune avec ses preuves dans `docs/results.md`. Les chiffres sont des cibles proposées, discutables dans une issue.
+
+1. **Retour arrière exercé en conditions réelles.** Au moins 3 retours arrière automatiques sur un vrai hôte, couvrant un conteneur qui ne devient jamais sain, une route qui répond un statut inattendu, et un `docker compose up` qui échoue ; chacun journalisé `rollback ok`, avec l'ancienne image en service et sa route qui répond ensuite. Journaux publiés.
+2. **Un deuxième hôte.** Au moins 4 semaines consécutives sur un second hôte indépendant (autre propriétaire, ou reverse proxy autre que Traefik) avec 20 conteneurs ou plus, présentées dans le même format que les chiffres du premier hôte.
+3. **Un taux de faux négatifs mesuré.** Un échantillon étiqueté d'au moins 100 constats, avec les verdicts d'au moins 2 relecteurs, tiré après gel des rôles et des seuils (pas les 20 cas ayant servi au réglage). Publier combien de verdicts « agir » le score classe sous ACT, avec un intervalle de confiance. Cible : au plus 10 % des verdicts « agir » manqués. Si la cible n'est pas atteinte, le score change et la mesure est refaite avant la 1.0.
+
 ## Démarrage rapide
 
 Python 3.9 ou plus, aucune dépendance. Docker avec le plugin Compose ; Trivy tourne en conteneur.
@@ -56,7 +78,8 @@ python -m rpl proposals --apply myapp --dry      # puis sans --dry
 - `rpl patch` refuse de démarrer sans commande d'instantané, sauf `--no-snapshot` ; un instantané ou une sauvegarde de base en échec arrête tout avant tout changement.
 - L'essai à blanc doit montrer que seul le service à mettre à jour serait recréé.
 - Un conteneur VPN, ou un service qui partage son réseau, est refusé.
-- `rpl proposals --apply` prend les paramètres de la proposition enregistrée, rien de libre, et refuse une proposition vieille de plus de 36 heures.
+- `rpl proposals --apply` prend les paramètres de la proposition enregistrée, rien de libre, et refuse une proposition vieille de plus de 36 heures, ou dont le fichier a été modifié après son calcul (contrôle SHA-256 : intégrité, pas authentification).
+- `rpl patch` valide les noms de service, de base et d'image avant de lancer quoi que ce soit, et refuse un service que le fichier Compose ne définit pas. Un `docker compose up` ou un essai à blanc en échec compte comme une mise à jour échouée, pas comme un succès.
 
 ## Avec un agent IA
 
@@ -64,6 +87,8 @@ Si un agent pilote votre infrastructure, donnez-lui les étapes en lecture seule
 
 ## Documentation
 
+- [SECURITY.md](SECURITY.md) : signaler une faille, ce que l'outil fait et ne fait pas (en anglais)
+- [CONTRIBUTING.md](CONTRIBUTING.md) : lancer les tests et les règles (bibliothèque standard seule, chiffres réels et limites écrites) (en anglais)
 - [docs/design.md](docs/design.md) : la boucle, les décisions, les limites (en anglais)
 - [docs/results.md](docs/results.md) : ce qui a été mesuré, ce qui ne l'a pas été, les défauts trouvés à l'usage (en anglais)
 
