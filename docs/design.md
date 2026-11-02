@@ -7,6 +7,11 @@ scan ──► inventory ──► risk score ──► fix check ──► prop
  nightly    nightly        nightly        nightly       nightly                              one service at a time
 ```
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="design-decisions-dark.png">
+  <img alt="Diagram: every night, read-only, rpl scans the running images, inventories how reachable each container is, scores the findings, checks in the registry that a candidate really fixes them, and prepares proposals; after your yes, one service gets a snapshot and database dump, a pinned image and a dry run, a recreation and a check, and an automatic rollback if the check fails." src="design-decisions.png">
+</picture>
+
 1. **scan** (`rpl scan`): Trivy on the images that are running, plus the CISA KEV list. Three classes: A (HIGH/CRITICAL with a fix), B (KEV, exploited in the wild, any severity), C (no fix). A scan that could not do its job is never reported "OK".
 2. **inventory** (`rpl inventory`): for each container, how exposed it really is, from `docker inspect` and Traefik labels: Internet with or without a forward-auth login, LAN port, LAN through the proxy, localhost, internal; plus Docker socket and elevated rights. Internet exposure is *unknown* until you provide the list of published host names (a tunnel configuration, a firewall rule export): it is never guessed.
 3. **risk score** (`rpl risk`): `(severity + KEV + sensitive access + role) x exposure factor`. Readable in one line, no model, no network call. See the module docstring for the points.
