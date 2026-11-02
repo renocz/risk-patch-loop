@@ -198,5 +198,20 @@ class AutomaticRollback(PatchCase):
         self.assertNotIn("rollback ok", json.dumps(self.journal()))
 
 
+class DefectRegressions(PatchCase):
+    def test_compose_up_failing_is_not_reported_as_success(self):
+        """Defect 1: `docker compose up` exits non-zero (e.g. the new image cannot be pulled) and leaves the OLD container running.
+        The old container is healthy and its route answers, so the check used to pass: 'OK' while the update never happened
+        and the compose file pinned an image that is not running."""
+        host = self.host(up_fails_for={NEW})
+        rc, out = self.run_patch(host)
+        self.assertNotEqual(rc, 0, out)
+        self.assertNotEqual(out.strip().splitlines()[-1], "OK")
+        self.assertIn("docker compose up failed", out)
+        self.assertEqual(self.compose_text(), self.original, "the compose file must not stay pinned to an image that is not running")
+        self.assertEqual(host.running, OLD)
+        self.assertNotIn("ok", [e["result"] for e in self.journal()], "a failed update must not be journaled as ok")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -188,7 +188,12 @@ def main(argv, host=HOST):
     # 5. recreate and check
     u = compose(a.compose, "up", "-d", "--no-deps", a.service, host=host)
     print((u.stdout + u.stderr).strip()[-300:])
-    ok1, e1 = healthy(a.compose, a.service, cfg["health_timeout_s"], host)
+    if u.returncode:
+        # e.g. the new image cannot be pulled: Docker leaves the OLD container running, which would pass the check below
+        ok1, e1 = False, "docker compose up failed: " + (u.stderr or u.stdout).strip()[-200:]
+        print(e1)
+    else:
+        ok1, e1 = healthy(a.compose, a.service, cfg["health_timeout_s"], host)
     ok2, c2 = route_ok(cfg["route_check_url"], a.route, codes, cfg["route_timeout_s"], host) if ok1 else (False, "-")
     print(f"check: container {e1}; route {a.route}: HTTP {c2} (expected {codes})")
     if ok1 and ok2:
