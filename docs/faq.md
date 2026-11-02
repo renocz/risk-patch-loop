@@ -96,9 +96,9 @@ No. It is plain Python with the standard library. There is no model call anywher
 Three kinds of requests, as far as I can tell from the code (`grep -rn "https://" rpl/` shows them):
 - Trivy downloads its vulnerability database;
 - the CISA KEV list is downloaded from cisa.gov;
-- the candidate versions are looked up on Docker Hub and ghcr.io, with the usual anonymous token requests.
+- the candidate versions are looked up on Docker Hub and ghcr.io, with the usual anonymous token requests. The registries see the image names you ask about, and your IP address.
 
-Nothing about my containers is sent anywhere else, and there is no telemetry. Check it yourself, it is short.
+I wrote no telemetry and no call to an AI service. Check it yourself, it is short.
 
 ### How long does a scan take, and what does it cost?
 It costs nothing but disk and a few minutes of CPU. I run the first five steps every night, from cron or a systemd timer, and they only read.

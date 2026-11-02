@@ -6,7 +6,7 @@ A short page for someone who runs or manages infrastructure and wants to know wh
 
 ## The 30-second version
 
-A vulnerability scanner gives you a list, and the list is too long to act on. One night's scan of my 65 containers returned 2,297 fixable findings. Nobody reads that.
+A vulnerability scanner gives you a list, and the list is too long to act on. One night's scan of my 65 containers returned 2,297 fixable findings. I can't read that.
 
 risk-patch-loop is a small tool I wrote to turn that list into a few things worth doing. It ranks the findings by how exposed each container really is, checks that a newer image really removes the finding, and prepares proposals. Applying one is a separate step that touches one service, keeps a snapshot, and puts the old image back if the check fails. Nothing is applied without a person saying yes.
 
@@ -14,17 +14,16 @@ It is a proof of concept. I built it and used it for a week on one host. Read th
 
 ## What it changes
 
-- **A shorter list, in a better order.** Severity alone puts everything at the top. rpl adds three things the scanner doesn't know: how reachable the container is, whether the flaw is being exploited right now (the CISA list), and what the service does.
-- **No update that changes nothing.** Of 12 images with findings worth acting on, 5 would have been "updated" without removing anything: no fixed image had been published. rpl says "no fix" instead of proposing a version bump.
-- **A small blast radius.** One service at a time, a snapshot first, a check after, a way back. On my host the updates it prepared cost 5 to 40 seconds of outage each.
+- **A shorter list, in a better order.** Severity alone puts everything at the top. rpl adds three things the scanner doesn't know: how reachable the container is, whether the flaw is known to be exploited in the wild (the CISA list), and what the service does.
+- **No update that changes nothing.** Of 12 images with findings worth acting on, 7 had a newer image that removes all of them. For the other 5, a plain version bump would have fixed nothing: for 2 the newer candidate removed none of the findings, and for 3 no newer version existed. rpl says "no fix" instead of proposing a bump.
+- **A small blast radius.** One service at a time, a snapshot first, a check after, a way back. The five real updates I ran through it each caused 5 to 40 seconds of outage (measured on my host, in [results.md](results.md)).
 - **A person stays in charge.** The tool prepares, a human approves. That also makes it easy to put behind an approval step if an AI agent does the work.
 
 ## What it does not do
 
 - It does not decide for you. The score is a ranking: on 20 findings it agreed with my own verdicts 14 times, and answering "defer" every time would have agreed 13 times. I chose its settings after seeing those verdicts, so treat it as a first number, not a result.
 - It does not prove an application works after an update. The check proves the container is healthy, runs the new image, and that one route answers.
-- It does not restore data. A database migration run by the new version stays; that is what the snapshot and the dump are for.
-- It does not verify image signatures. It trusts the tag and the registry.
+- It does not restore data. The rollback puts the old image back and nothing else: a database migration run by the new version stays. The snapshot you configure and the database dump it takes first are what you would restore from.- It does not verify image signatures. It trusts the tag and the registry.
 - It does not cover what I haven't tried: one host, Docker Compose, Traefik, Docker Hub and ghcr.io. Anything else reads as "unknown", never as a guess.
 
 ## How far to trust it
@@ -33,7 +32,7 @@ It is a proof of concept. I built it and used it for a week on one host. Read th
 |---|---|
 | **Tested** | 203 automated tests against a fake Docker host, run in CI on two Python versions. A few behaviours were checked by hand on a real Docker engine. |
 | **Used** | One week on one homelab: 65 containers, one owner. Five real updates went through it and each one passed its check. |
-| **The rollback** | Never needed on a real service. I made it fire three times on purpose, on a disposable service of the real host (2 November 2026). The old image came back every time. That is tested, not proven. |
+| **The rollback** | Never needed on a real service. I made it fire three times on purpose, on a disposable test service on the real host (2 November 2026): a new image that serves nothing, one that never becomes healthy, and a `docker compose up` that fails. The old image came back every time. Those were staged failures, not a real application failing, so it is tested, not proven. If the rollback itself can't be verified, it exits with code 4 and says to check by hand. |
 | **Found by using it** | Three real defects in the first week, then eleven more by writing tests and reviewing the code. They are listed in [results.md](results.md), with the tests that now cover them. |
 
 I wrote the numbers down the way they came out, including the ones that don't flatter the tool.
@@ -51,10 +50,10 @@ If your setup is a Traefik homelab and you are curious, you can try it today in 
 ## Likely questions
 
 **Is it a product?**
-No. It is one engineer's tool, in Python, with no dependency. There is no support, no roadmap promise and no service behind it.
+No. It is one engineer's tool, in Python, with no third-party package. There is no support and no roadmap promise. You can open an issue on GitHub, with no guaranteed answer time.
 
 **Does it send my data anywhere?**
-Not that I know of, and the code is short enough to check. It downloads the scanner's database, the CISA list, and looks up versions on the registries. No telemetry, no AI service.
+It makes three kinds of requests: Trivy downloads its vulnerability database, the CISA list is fetched from cisa.gov, and candidate versions are looked up on Docker Hub and ghcr.io (the registries see which image names you ask about, and your IP address). It also runs Trivy and Docker on your host, so it needs the rights to do that. I wrote no telemetry and no call to an AI service; `grep -rn "https://" rpl/` shows every address, and the code is about 1,300 lines.
 
 **Does it need an AI agent?**
 No. It works from the command line. I do let an AI agent drive my infrastructure, and for that I keep the "apply" step behind an approval the agent can't give itself (see [agent-ops-guardrails](https://github.com/renocz/agent-ops-guardrails)). rpl works without it.
@@ -64,4 +63,4 @@ Because the cheap answer to a long vulnerability list is either to ignore it or 
 
 ---
 
-*This is one engineer's field notes on one project, not a pitch. The numbers behind every claim are in [results.md](results.md).*
+*One engineer's field notes on one project. The numbers behind every claim are in [results.md](results.md).*

@@ -98,9 +98,9 @@ Non. C'est du Python simple, avec la bibliothèque standard. Il n'y a aucun appe
 Trois sortes de requêtes, d'après le code (`grep -rn "https://" rpl/` les montre) :
 - Trivy télécharge sa base de vulnérabilités ;
 - la liste CISA KEV est téléchargée sur cisa.gov ;
-- les versions candidates sont cherchées sur Docker Hub et ghcr.io, avec les demandes de jeton anonyme habituelles.
+- les versions candidates sont cherchées sur Docker Hub et ghcr.io, avec les demandes de jeton anonyme habituelles. Les registres voient les noms d'images que vous demandez, et votre adresse IP.
 
-Rien sur mes conteneurs n'est envoyé ailleurs, et il n'y a pas de télémétrie. Vérifiez vous-même, c'est court.
+Je n'ai écrit ni télémétrie ni appel à un service d'IA. Vérifiez vous-même, c'est court.
 
 ### Combien de temps dure un scan, et combien ça coûte ?
 Ça ne coûte que du disque et quelques minutes de processeur. Je lance les cinq premières étapes chaque nuit, depuis cron ou un timer systemd, et elles ne font que lire.
