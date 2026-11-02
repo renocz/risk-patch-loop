@@ -10,6 +10,7 @@ import re
 import threading
 import types
 import urllib.request
+from urllib.parse import parse_qs, urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
@@ -20,8 +21,11 @@ class FakeRegistry:
     """tags: {repo: [tags]}; digests: {(repo, tag): digest}; broken: {repo: how} with how in
     {"500", "401", "not-json", "no-token"}. Every request is recorded in .requests as (method, path, Authorization)."""
 
-    def __init__(self, tags=None, digests=None, broken=None):
+    def __init__(self, tags=None, digests=None, broken=None, page_size=None, link_base=None, loop=False):
+        """page_size: serve tag lists in pages of that size with a `Link: <...>; rel="next"` header (distribution spec).
+        link_base: build the Link URL on this base instead of a relative one (another host). loop: the next link never advances."""
         self.tags, self.digests, self.broken = tags or {}, digests or {}, broken or {}
+        self.page_size, self.link_base, self.loop = page_size, link_base, loop
         self.requests = []
         reg = self
 
@@ -64,7 +68,19 @@ class FakeRegistry:
                 if m.group(2) == "tags/list":
                     if repo not in reg.tags:
                         return self._send(404, b'{"errors":[{"code":"NAME_UNKNOWN"}]}')
-                    return self._json({"name": repo, "tags": reg.tags[repo]})
+                    if how == "null-tags":
+                        return self._json({"name": repo, "tags": None})
+                    tags = reg.tags[repo]
+                    if not reg.page_size:
+                        return self._json({"name": repo, "tags": tags})
+                    last = parse_qs(urlsplit(self.path).query).get("last", [None])[0]
+                    start = tags.index(last) + 1 if last in tags else 0
+                    page = tags[start:start + reg.page_size]
+                    headers = {"Content-Type": "application/json"}
+                    if start + reg.page_size < len(tags) or reg.loop:
+                        nxt = page[-1] if not reg.loop else (last or tags[0])
+                        headers["Link"] = f'<{reg.link_base or ""}/v2/{repo}/tags/list?n={reg.page_size}&last={nxt}>; rel="next"'
+                    return self._send(200, json.dumps({"name": repo, "tags": page}).encode(), headers)
                 digest = reg.digests.get((repo, m.group(3)))
                 if digest is None:
                     return self._send(404)

@@ -173,5 +173,49 @@ class UnreadableRegistry(RegistryCase):
         self.assertIn("no proven fix", skipped[0]["reason"])
 
 
+class DefectRegressions(RegistryCase):
+    PAGED = ["0.8.0", "0.9.0", "1.0.0", "1.0.1", "1.1.0"]
+
+    def test_tag_list_split_over_several_pages_is_read_in_full(self):
+        """Defect 5: the Link header of a paginated tag list was ignored. With the newest tags on a later page the tool answered
+        'NO NEWER VERSION' (updating changes nothing), which is a statement about data it never read."""
+        with FakeRegistry(tags={"example-org/app": self.PAGED}, page_size=2) as reg:
+            self.assertEqual(fixcheck.list_tags("ghcr.io", "example-org/app"), self.PAGED)
+        self.assertEqual(len([r for r in reg.requests if "/tags/list" in r[1]]), 3)
+        self.assertTrue(all(r[2] == "Bearer tok-example-org/app" for r in reg.requests if "/tags/list" in r[1]))
+
+    def test_newest_tag_on_a_later_page_is_found(self):
+        with FakeRegistry(tags={"example-org/app": self.PAGED}, page_size=2):
+            _, entries, _ = self.fixcheck(f"{IMAGE}:1.0.0")
+        self.assertEqual((entries[0]["candidate"], entries[0]["verdict"]), ("1.1.0", "COMPLETE"))
+
+    def test_next_link_to_another_host_is_not_followed_and_the_token_is_not_sent_there(self):
+        with FakeRegistry(tags={"example-org/app": ["1.1.0"]}) as other:
+            with FakeRegistry(tags={"example-org/app": self.PAGED}, page_size=2, link_base=other.url):
+                with self.assertRaises(ValueError):
+                    fixcheck.list_tags("ghcr.io", "example-org/app")
+        self.assertEqual([r for r in other.requests if "/tags/list" in r[1]], [])
+
+    def test_endless_pagination_stops(self):
+        with FakeRegistry(tags={"example-org/app": self.PAGED}, page_size=2, loop=True):
+            with self.assertRaises(ValueError):
+                fixcheck.list_tags("ghcr.io", "example-org/app")
+
+    def test_registry_that_returns_no_tag_at_all_is_unknown_not_no_newer_version(self):
+        """Defect 5b: `"tags": null` or [] became an empty list, and an empty list means 'nothing newer'. A repository that holds
+        the image we are running cannot have zero tags: the answer is unreadable, not reassuring."""
+        for tags, broken in (([], {}), (["x"], {"example-org/app": "null-tags"})):
+            with self.subTest(tags=tags, broken=broken), FakeRegistry(tags={"example-org/app": tags}, broken=broken):
+                _, entries, scan = self.fixcheck(f"{IMAGE}:1.0.0")
+                self.assertTrue(entries[0]["verdict"].startswith("UNKNOWN"), entries[0])
+                scan.assert_not_called()
+
+    def test_the_error_names_what_went_wrong(self):
+        """Defect 5c: registry_error was only the exception class ('HTTPError'): no status, nothing to act on."""
+        with FakeRegistry(tags={"example-org/app": ["1.1.0"]}, broken={"example-org/app": "500"}):
+            _, entries, _ = self.fixcheck(f"{IMAGE}:1.0.0")
+        self.assertIn("500", entries[0]["registry_detail"])
+
+
 if __name__ == "__main__":
     unittest.main()
