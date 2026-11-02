@@ -24,12 +24,25 @@ from . import config
 REFUSED_NAMES = ("gluetun",)
 
 
-def sh(cmd, **kw):
-    return subprocess.run(cmd, capture_output=True, text=True, **kw)
+class Host:
+    """Everything `rpl patch` does to the outside world: run a command, wait, read the clock.
+    Tests inject a fake with the same three methods, so no real Docker, curl or sleep is involved."""
+
+    def run(self, cmd, **kw):
+        return subprocess.run(cmd, capture_output=True, text=True, **kw)
+
+    def sleep(self, seconds):
+        time.sleep(seconds)
+
+    def now(self):
+        return time.time()
 
 
-def compose(f, *a):
-    return sh(["docker", "compose", "-f", f, *a])
+HOST = Host()
+
+
+def compose(f, *a, host=HOST):
+    return host.run(["docker", "compose", "-f", f, *a])
 
 
 # ---- pinning -------------------------------------------------------------------------------------------------------
@@ -39,7 +52,7 @@ def find_image_line(lines, old):
     return idx[0] if len(idx) == 1 else None
 
 
-def pin(compose_file, old, new, apply=False):
+def pin(compose_file, old, new, apply=False, host=HOST):
     """Replace ONE `image:` value. Backup with a timestamp (seconds), `docker compose config -q` after writing, old file restored on refusal.
     Returns (ok, message, backup path)."""
     with open(compose_file, encoding="utf-8") as f:
@@ -56,7 +69,7 @@ def pin(compose_file, old, new, apply=False):
     lines[i] = new_line
     with open(compose_file, "w", encoding="utf-8") as f:
         f.write("".join(lines))
-    r = subprocess.run(["docker", "compose", "-f", compose_file, "config", "-q"], capture_output=True, text=True)
+    r = host.run(["docker", "compose", "-f", compose_file, "config", "-q"])
     if r.returncode:
         shutil.copy2(backup, compose_file)
         return False, "docker compose refused the new file, old file restored: " + r.stderr.strip()[:200], backup
@@ -65,8 +78,8 @@ def pin(compose_file, old, new, apply=False):
 
 # ---- checks --------------------------------------------------------------------------------------------------------
 
-def shares_vpn_network(compose_file, service):
-    cfg = compose(compose_file, "config", "--format", "json")
+def shares_vpn_network(compose_file, service, host=HOST):
+    cfg = compose(compose_file, "config", "--format", "json", host=host)
     if cfg.returncode:
         return True                       # cannot tell: refuse
     svc = json.loads(cfg.stdout).get("services", {}).get(service, {})
@@ -74,27 +87,27 @@ def shares_vpn_network(compose_file, service):
     return any(n in service or n in mode for n in REFUSED_NAMES)
 
 
-def healthy(compose_file, service, timeout):
-    end = time.time() + timeout
-    while time.time() < end:
-        cid = compose(compose_file, "ps", "-q", service).stdout.strip().splitlines()
+def healthy(compose_file, service, timeout, host=HOST):
+    end = host.now() + timeout
+    while host.now() < end:
+        cid = compose(compose_file, "ps", "-q", service, host=host).stdout.strip().splitlines()
         if cid:
-            st = json.loads(sh(["docker", "inspect", cid[0]]).stdout)[0]["State"]
+            st = json.loads(host.run(["docker", "inspect", cid[0]]).stdout)[0]["State"]
             health = (st.get("Health") or {}).get("Status")
             if st.get("Running") and health in (None, "healthy"):
                 return True, health or "no healthcheck"
-        time.sleep(5)
+        host.sleep(5)
     return False, f"not healthy after {timeout} s"
 
 
-def route_ok(url, host, codes, timeout):
-    end = time.time() + timeout
+def route_ok(url, route_host, codes, timeout, host=HOST):
+    end = host.now() + timeout
     code = "?"
-    while time.time() < end:
-        code = sh(["curl", "-sk", "-o", "/dev/null", "-m", "15", "-H", f"Host: {host}", "-w", "%{http_code}", url]).stdout.strip()
+    while host.now() < end:
+        code = host.run(["curl", "-sk", "-o", "/dev/null", "-m", "15", "-H", f"Host: {route_host}", "-w", "%{http_code}", url]).stdout.strip()
         if code in codes:
             return True, code
-        time.sleep(5)
+        host.sleep(5)
     return False, code
 
 
@@ -110,7 +123,7 @@ def journal(cfg, entry):
 
 # ---- the sequence --------------------------------------------------------------------------------------------------
 
-def main(argv):
+def main(argv, host=HOST):
     p = argparse.ArgumentParser(prog="rpl patch")
     p.add_argument("--compose", required=True)
     p.add_argument("--service", required=True)
@@ -126,10 +139,10 @@ def main(argv):
     a = p.parse_args(argv)
     cfg = config.load()
     codes = a.codes.split()
-    if shares_vpn_network(a.compose, a.service):
+    if shares_vpn_network(a.compose, a.service, host):
         print("REFUSED: VPN container or a service sharing its network: dedicated procedure and an explicit decision required")
         return 3
-    ok, msg, _ = pin(a.compose, a.old, a.new)
+    ok, msg, _ = pin(a.compose, a.old, a.new, host=host)
     print(msg)
     if not ok:
         return 1
@@ -139,7 +152,7 @@ def main(argv):
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M")
     # 1. snapshot
     if cfg.get("snapshot_command"):
-        s = sh(cfg["snapshot_command"] if isinstance(cfg["snapshot_command"], list) else ["sh", "-c", cfg["snapshot_command"]])
+        s = host.run(cfg["snapshot_command"] if isinstance(cfg["snapshot_command"], list) else ["sh", "-c", cfg["snapshot_command"]])
         print(s.stdout.strip())
         if s.returncode:
             print("snapshot FAILED: nothing was changed")
@@ -152,20 +165,20 @@ def main(argv):
         d = os.path.join(cfg["backup_dir"], stamp)
         os.makedirs(d, exist_ok=True)
         dump = f"{a.service}-{stamp}.dump"
-        r1 = sh(["docker", "exec", "-w", "/tmp", a.db_container, "pg_dump", "-U", a.db_user, "-Fc", "-f", f"/tmp/{dump}", a.db_name])
-        r2 = sh(["docker", "cp", f"{a.db_container}:/tmp/{dump}", os.path.join(d, dump)])
-        r3 = sh(["docker", "exec", "-w", "/tmp", a.db_container, "pg_restore", "-l", f"/tmp/{dump}"])
+        r1 = host.run(["docker", "exec", "-w", "/tmp", a.db_container, "pg_dump", "-U", a.db_user, "-Fc", "-f", f"/tmp/{dump}", a.db_name])
+        r2 = host.run(["docker", "cp", f"{a.db_container}:/tmp/{dump}", os.path.join(d, dump)])
+        r3 = host.run(["docker", "exec", "-w", "/tmp", a.db_container, "pg_restore", "-l", f"/tmp/{dump}"])
         if r1.returncode or r2.returncode or r3.returncode or len(r3.stdout.splitlines()) < 5:
             print("database dump FAILED: nothing was changed", (r1.stderr + r2.stderr + r3.stderr)[:200])
             return 1
         print(f"dump: {os.path.join(d, dump)} ({os.path.getsize(os.path.join(d, dump)) // 1048576} MB, {len(r3.stdout.splitlines())} objects readable): delete within 7 days")
     # 3. pin
-    ok, msg, backup = pin(a.compose, a.old, a.new, apply=True)
+    ok, msg, backup = pin(a.compose, a.old, a.new, apply=True, host=host)
     print(msg)
     if not ok:
         return 1
     # 4. dry run: only this service may be recreated
-    dry = compose(a.compose, "up", "-d", "--no-deps", "--dry-run", a.service)
+    dry = compose(a.compose, "up", "-d", "--no-deps", "--dry-run", a.service, host=host)
     recreated = {l.split()[1] for l in (dry.stdout + dry.stderr).splitlines() if "Recreate" in l}
     print("dry run would recreate", sorted(recreated))
     if len(recreated) > 1:
@@ -173,23 +186,23 @@ def main(argv):
         print("FAILED: more than one container would be recreated: old file restored")
         return 1
     # 5. recreate and check
-    u = compose(a.compose, "up", "-d", "--no-deps", a.service)
+    u = compose(a.compose, "up", "-d", "--no-deps", a.service, host=host)
     print((u.stdout + u.stderr).strip()[-300:])
-    ok1, e1 = healthy(a.compose, a.service, cfg["health_timeout_s"])
-    ok2, c2 = route_ok(cfg["route_check_url"], a.route, codes, cfg["route_timeout_s"]) if ok1 else (False, "-")
+    ok1, e1 = healthy(a.compose, a.service, cfg["health_timeout_s"], host)
+    ok2, c2 = route_ok(cfg["route_check_url"], a.route, codes, cfg["route_timeout_s"], host) if ok1 else (False, "-")
     print(f"check: container {e1}; route {a.route}: HTTP {c2} (expected {codes})")
     if ok1 and ok2:
-        journal(cfg, {"ts": time.time(), "service": a.service, "from": a.old, "to": a.new, "result": "ok"})
+        journal(cfg, {"ts": host.now(), "service": a.service, "from": a.old, "to": a.new, "result": "ok"})
         print("OK")
         return 0
     # 6. rollback
     print("CHECK FAILED: ROLLBACK")
     shutil.copy2(backup, a.compose)
-    compose(a.compose, "up", "-d", "--no-deps", a.service)
-    okb, eb = healthy(a.compose, a.service, cfg["health_timeout_s"])
-    okr, cr = route_ok(cfg["route_check_url"], a.route, codes, cfg["route_timeout_s"]) if okb else (False, "-")
+    compose(a.compose, "up", "-d", "--no-deps", a.service, host=host)
+    okb, eb = healthy(a.compose, a.service, cfg["health_timeout_s"], host)
+    okr, cr = route_ok(cfg["route_check_url"], a.route, codes, cfg["route_timeout_s"], host) if okb else (False, "-")
     print(f"after rollback: container {eb}; route HTTP {cr}")
-    journal(cfg, {"ts": time.time(), "service": a.service, "from": a.old, "to": a.new, "result": "rollback " + ("ok" if okb and okr else "CHECK BY HAND")})
+    journal(cfg, {"ts": host.now(), "service": a.service, "from": a.old, "to": a.new, "result": "rollback " + ("ok" if okb and okr else "CHECK BY HAND")})
     return 2
 
 

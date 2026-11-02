@@ -78,14 +78,11 @@ def build_command(p, dry=False):
 
 def registry_digest(ref):
     reg, repo, tag = fixcheck.split_ref(ref)
-    if reg == "ghcr.io":
-        tok = fixcheck.get_json(f"https://ghcr.io/token?scope=repository:{repo}:pull")["token"]
-        url = f"https://ghcr.io/v2/{repo}/manifests/{tag}"
-    elif reg == "docker.io":
-        tok = fixcheck.get_json(f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{repo}:pull")["token"]
-        url = f"https://registry-1.docker.io/v2/{repo}/manifests/{tag}"
-    else:
+    auth = fixcheck.registry_auth(reg, repo)
+    if auth is None:
         return None
+    tok, api = auth
+    url = f"{api}/v2/{repo}/manifests/{tag}"
     accept = ("application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, "
               "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json")
     req = urllib.request.Request(url, method="HEAD", headers={"Authorization": f"Bearer {tok}", "User-Agent": "risk-patch-loop", "Accept": accept})

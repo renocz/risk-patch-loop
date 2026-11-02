@@ -67,16 +67,28 @@ def get_json(url, headers=None):
     return json.load(urllib.request.urlopen(urllib.request.Request(url, headers=headers or {"User-Agent": "risk-patch-loop"}), timeout=30))
 
 
-def list_tags(reg, repo):
-    if reg == "ghcr.io":
-        tok = get_json(f"https://ghcr.io/token?scope=repository:{repo}:pull")["token"]
-        url = f"https://ghcr.io/v2/{repo}/tags/list?n=10000"
-    elif reg == "docker.io":
-        tok = get_json(f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{repo}:pull")["token"]
-        url = f"https://registry-1.docker.io/v2/{repo}/tags/list?n=10000"
-    else:
+# Anonymous registry endpoints. Kept in one table so that tests can point them at a local fake registry.
+ENDPOINTS = {
+    "ghcr.io": {"token": "https://ghcr.io/token?scope=repository:{repo}:pull", "api": "https://ghcr.io"},
+    "docker.io": {"token": "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{repo}:pull",
+                  "api": "https://registry-1.docker.io"},
+}
+
+
+def registry_auth(reg, repo):
+    """(bearer token, API base URL) for a supported registry, or None."""
+    ep = ENDPOINTS.get(reg)
+    if ep is None:
         return None
-    return get_json(url, {"Authorization": f"Bearer {tok}", "User-Agent": "risk-patch-loop"}).get("tags") or []
+    return get_json(ep["token"].format(repo=repo))["token"], ep["api"]
+
+
+def list_tags(reg, repo):
+    auth = registry_auth(reg, repo)
+    if auth is None:
+        return None
+    tok, api = auth
+    return get_json(f"{api}/v2/{repo}/tags/list?n=10000", {"Authorization": f"Bearer {tok}", "User-Agent": "risk-patch-loop"}).get("tags") or []
 
 
 def scan_remote(cfg, ref):
