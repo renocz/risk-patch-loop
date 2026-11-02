@@ -51,19 +51,56 @@ def compose(f, *a, host=HOST):
 
 # ---- pinning -------------------------------------------------------------------------------------------------------
 
-def find_image_line(lines, old):
-    idx = [i for i, l in enumerate(lines) if l.lstrip().startswith("image:") and l.split("image:", 1)[1].strip().split("#")[0].strip() == old]
+SERVICE_KEY = re.compile(r"""^["']?([A-Za-z0-9_.-]+)["']?\s*:\s*(#.*)?$""")
+
+
+def service_block(lines, service):
+    """(first, last+1) line indexes of the body of `service` under the top-level `services:` key, or None.
+    Understands block-style YAML only (comments, blank lines and quoted keys are fine); anchors, merges and flow style are not followed."""
+    in_services, child = False, None
+    start = None
+    for i, line in enumerate(lines):
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if start is not None and indent <= child:
+            return start, i
+        if indent == 0:
+            in_services, child = text.split("#")[0].strip() == "services:", None
+            continue
+        if not in_services:
+            continue
+        if child is None:
+            child = indent
+        if indent == child and start is None:
+            m = SERVICE_KEY.match(text)
+            if m and m.group(1) == service:
+                start = i + 1
+    return (start, len(lines)) if start is not None else None
+
+
+def find_image_line(lines, old, block=None):
+    """Index of the ONE `image:` line whose value is `old` (within `block` = (first, last+1) if given), else None."""
+    lo, hi = block if block else (0, len(lines))
+    idx = [i for i in range(lo, hi) if lines[i].lstrip().startswith("image:") and lines[i].split("image:", 1)[1].strip().split("#")[0].strip() == old]
     return idx[0] if len(idx) == 1 else None
 
 
-def pin(compose_file, old, new, apply=False, host=HOST):
-    """Replace ONE `image:` value. Backup with a timestamp (seconds), `docker compose config -q` after writing, old file restored on refusal.
-    Returns (ok, message, backup path)."""
+def pin(compose_file, old, new, apply=False, host=HOST, service=None):
+    """Replace ONE `image:` value. With `service`, only a line inside that service's block qualifies. Backup with a timestamp (seconds),
+    `docker compose config -q` after writing, old file restored on refusal. Returns (ok, message, backup path)."""
     with open(compose_file, encoding="utf-8") as f:
         lines = f.read().splitlines(keepends=True)
-    i = find_image_line(lines, old)
+    block = None
+    if service:
+        block = service_block(lines, service)
+        if block is None:
+            return False, f"cannot locate the block of service '{service}' in {compose_file} (anchors or flow style?): refusing to guess", None
+    i = find_image_line(lines, old, block)
     if i is None:
-        return False, f"'{old}' must appear exactly once on an image: line", None
+        where = f" of service '{service}'" if service else ""
+        return False, f"'{old}' must appear exactly once on an image: line{where}", None
     new_line = lines[i].replace(old, new, 1)
     msg = f"- {lines[i].rstrip()}\n+ {new_line.rstrip()}"
     if not apply:
@@ -94,9 +131,19 @@ def invalid_arguments(a):
     return None
 
 
-def service_defined(compose_file, service, host=HOST):
+def service_problem(compose_file, service, old, host=HOST):
+    """Why this service cannot be pinned from `old` (as `docker compose config` resolves it), or None."""
     cfg = compose(compose_file, "config", "--format", "json", host=host)
-    return cfg.returncode == 0 and service in json.loads(cfg.stdout).get("services", {})
+    if cfg.returncode:
+        return f"cannot read {compose_file}: " + cfg.stderr.strip()[:200]
+    svc = json.loads(cfg.stdout).get("services", {}).get(service)
+    if svc is None:
+        return f"service '{service}' is not defined in {compose_file}"
+    if svc.get("build"):
+        return f"service '{service}' is built locally (build:): there is no pulled image to pin"
+    if svc.get("image") != old:
+        return f"service '{service}' uses image '{svc.get('image')}', not '{old}'"
+    return None
 
 
 def container_names(compose_file, service, host=HOST):
@@ -180,10 +227,11 @@ def main(argv, host=HOST):
     if shares_vpn_network(a.compose, a.service, host):
         print("REFUSED: VPN container or a service sharing its network: dedicated procedure and an explicit decision required")
         return 3
-    if not service_defined(a.compose, a.service, host):
-        print(f"REFUSED: service '{a.service}' is not defined in {a.compose}")
+    problem = service_problem(a.compose, a.service, a.old, host)
+    if problem:
+        print("REFUSED: " + problem)
         return 1
-    ok, msg, _ = pin(a.compose, a.old, a.new, host=host)
+    ok, msg, _ = pin(a.compose, a.old, a.new, host=host, service=a.service)
     print(msg)
     if not ok:
         return 1
@@ -214,7 +262,7 @@ def main(argv, host=HOST):
             return 1
         print(f"dump: {os.path.join(d, dump)} ({os.path.getsize(os.path.join(d, dump)) // 1048576} MB, {len(r3.stdout.splitlines())} objects readable): delete within 7 days")
     # 3. pin
-    ok, msg, backup = pin(a.compose, a.old, a.new, apply=True, host=host)
+    ok, msg, backup = pin(a.compose, a.old, a.new, apply=True, host=host, service=a.service)
     print(msg)
     if not ok:
         return 1

@@ -9,7 +9,7 @@ from unittest import mock
 
 from rpl import config, patch
 
-from .fakes import FakeHost, rpl_config, write_compose
+from .fakes import FakeHost, rpl_config, write_compose, write_compose_text
 
 OLD, NEW = "registry.example.test/app:1", "registry.example.test/app:2"
 
@@ -306,6 +306,81 @@ class DryRunMustShowExactlyOneRecreation(PatchCase):
         host = self.host(dry_recreates=["app"])
         host.running = None                                    # `ps -a -q` finds nothing
         self.assert_refused(host, *self.run_patch(host))
+
+
+class PinIsBoundToTheService(PatchCase):
+    """Council point 2: the pin replaced the one `image:` line equal to --old anywhere in the file, never checking it belonged to
+    --service, and service_defined only checked that the service exists."""
+
+    X, Y = "registry.example.test/app:1", "registry.example.test/other:1"
+
+    def go(self, text, service="app", old=None, **host_kw):
+        self.compose = write_compose_text(self.dir, text)
+        self.original = self.compose_text()
+        host = self.host(service=service, **host_kw)
+        rc, out = self.run_patch(host, db=False, service=service, old=old or self.X)
+        return host, rc, out
+
+    def run_patch(self, host, *extra, db=True, service="app", new=NEW, old=OLD):
+        argv = ["--compose", self.compose, "--service", service, "--old", old, "--new", new, "--route", "app.example.test", "--codes", "200 302"]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = patch.main(argv + list(extra), host)
+        return rc, out.getvalue()
+
+    def test_two_services_with_the_same_image_only_the_requested_one_changes(self):
+        host, rc, out = self.go(f"services:\n  app:\n    image: {self.X}\n  worker:\n    image: {self.X}\n")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.compose_text(), f"services:\n  app:\n    image: {NEW}\n  worker:\n    image: {self.X}\n")
+
+    def test_old_image_that_belongs_to_another_service_is_refused(self):
+        host, rc, out = self.go(f"services:\n  app:\n    image: {self.X}\n  worker:\n    image: {self.Y}\n", old=self.Y)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("uses image", out)
+        self.assertEqual(self.compose_text(), self.original)
+        self.assertEqual(host.up_images, [])
+
+    def test_resolved_image_equal_but_literal_line_in_another_service_is_refused(self):
+        text = f"services:\n  app:\n    image: ${{APP_IMAGE:-{self.X}}}\n  worker:\n    image: {self.X}\n"
+        host, rc, out = self.go(text)
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(self.compose_text(), self.original, "the other service's line must not be edited")
+        self.assertEqual(host.up_images, [])
+
+    def test_image_given_through_a_variable_is_refused_not_guessed(self):
+        host, rc, out = self.go(f"services:\n  app:\n    image: ${{APP_IMAGE:-{self.X}}}\n")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(self.compose_text(), self.original)
+
+    def test_service_built_locally_has_no_image_to_pin(self):
+        host, rc, out = self.go("services:\n  app:\n    build: .\n")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("build", out)
+        self.assertEqual(self.compose_text(), self.original)
+
+    def test_service_with_both_build_and_image_is_refused(self):
+        host, rc, out = self.go(f"services:\n  app:\n    build: .\n    image: {self.X}\n")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("build", out)
+
+    def test_an_image_line_outside_services_is_not_a_candidate(self):
+        text = f"x-defaults:\n  image: {self.X}\nservices:\n  app:\n    image: {self.X}\n"
+        host, rc, out = self.go(text)
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(self.compose_text(), text.replace(f"  app:\n    image: {self.X}", f"  app:\n    image: {NEW}"))
+
+    def test_comments_blank_lines_and_quoted_keys_inside_blocks(self):
+        text = f'services:\n  # first\n  "app":\n\n    # the image\n    image: {self.X}  # pinned\n  worker:\n    image: {self.Y}\n'
+        host, rc, out = self.go(text)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"image: {NEW}  # pinned", self.compose_text())
+        self.assertIn(f"image: {self.Y}", self.compose_text())
+
+    def test_pin_function_alone_refuses_a_line_outside_the_service_block(self):
+        f = write_compose_text(self.dir, f"services:\n  app:\n    restart: always\n  worker:\n    image: {self.X}\n")
+        ok, msg, _ = patch.pin(f, self.X, NEW, apply=True, host=self.host(), service="app")
+        self.assertFalse(ok)
+        self.assertNotIn(NEW, open(f).read())
 
 
 class InputValidation(PatchCase):
