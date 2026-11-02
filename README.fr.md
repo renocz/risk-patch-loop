@@ -1,10 +1,34 @@
 # risk-patch-loop
 
+[![tests](https://github.com/renocz/risk-patch-loop/actions/workflows/tests.yml/badge.svg)](https://github.com/renocz/risk-patch-loop/actions/workflows/tests.yml)
+
 [English](README.md) · **Français**
 
 **Quelles vulnérabilités de conteneurs comptent vraiment sur *votre* hôte, existe-t-il un correctif qui les supprime réellement, et peut-on l'appliquer sans risque, avec un humain qui dit oui ?**
 
-Sur le homelab de l'auteur, un scan de nuit a renvoyé 2 297 constats HIGH/CRITICAL corrigeables. Ce n'est pas une liste de tâches. Cet outil en fait une, grâce à trois choses qu'un scanner ignore : l'exposition réelle de chaque conteneur, la preuve qu'une version plus récente supprime bien le constat, et ce qu'est une mise à jour sûre d'un seul service.
+En une minute :
+- Un scanner vous donne une liste. Sur le homelab de l'auteur, un scan de nuit a renvoyé 2 297 constats HIGH/CRITICAL corrigeables. Ce n'est pas une liste de tâches.
+- rpl les classe selon l'exposition réelle de chaque conteneur, vérifie qu'une image plus récente supprime bien le constat (scannée depuis le registre, rien n'est téléchargé) et prépare des propositions.
+- En appliquer une est une commande séparée qui ne touche qu'**un service à la fois** : instantané, sauvegarde de base de données, image épinglée, essai à blanc, recréation, contrôle de santé et d'une route, et un retour arrière automatique vérifié si le contrôle échoue.
+- Rien ne se passe sans un humain : l'outil prépare, vous décidez.
+
+C'est une preuve de concept construite et utilisée pendant une semaine sur un hôte Docker, dont les limites sont [écrites, pas cachées](#limites-connues). Elle s'adresse à qui accepte de lire 1 000 lignes de Python, pas à un produit.
+
+## Par où commencer
+
+- **J'ai Docker Compose derrière Traefik et je veux l'essayer :** le [démarrage rapide](#démarrage-rapide), puis les [fichiers à écrire à la main](#fichiers-à-écrire-à-la-main-voir-examples).
+- **Je veux savoir à quoi me fier :** les [limites connues](#limites-connues), puis [docs/results.md](docs/results.md) (en anglais) : ce qui a été mesuré, ce qui ne l'a pas été, et les défauts de l'outil à sa première utilisation sur un vrai hôte.
+- **Je veux voir comment il décide :** [docs/design.md](docs/design.md) (en anglais : la boucle, les décisions, les limites).
+- **Un agent IA pilote mon infrastructure :** donnez-lui les étapes en lecture seule et gardez `--apply` derrière une approbation qu'il ne peut pas s'accorder lui-même, voir [Avec un agent IA](#avec-un-agent-ia).
+
+## La boucle en une image
+
+Chaque nuit, en lecture seule : rpl lit quatre choses qu'un scanner seul ne combine pas. Après votre oui, un service est mis à jour, et si le contrôle échoue l'ancienne image revient.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/loop-dark.png">
+  <img alt="Schéma : Trivy, Traefik, CISA KEV et les registres alimentent rpl, qui écrit des propositions ; après le oui de l'humain, Docker Compose met à jour un service, et un retour arrière automatique rétablit l'ancienne image si le contrôle échoue." src="docs/loop.png">
+</picture>
 
 ```
 scan ──► inventaire ──► score de risque ──► vérif. du correctif ──► propositions ──► vous dites oui ──► patch + retour arrière automatique
@@ -17,7 +41,9 @@ scan ──► inventaire ──► score de risque ──► vérif. du correct
 
 ## État : v0.9, un hôte, des chiffres honnêtes
 
-Construit et utilisé pendant une semaine sur un hôte Docker (65 conteneurs, Traefik, un propriétaire). **Lisez [docs/results.md](docs/results.md) avant de lui faire confiance** (en anglais) : le score est d'accord avec les verdicts de son propriétaire 14 fois sur 20 (une réponse triviale « toujours différer » en obtient 13), les rôles ont été réglés après avoir vu ces verdicts, et le retour arrière automatique n'a jamais été déclenché en production. Il gère Docker Compose + Traefik, Docker Hub et ghcr.io. C'est une preuve de concept pour qui accepte de lire 1 000 lignes de Python, pas un produit.
+Construit et utilisé pendant une semaine sur un hôte Docker (65 conteneurs, Traefik, un propriétaire). **Lisez [docs/results.md](docs/results.md) avant de lui faire confiance** (en anglais) : le score est d'accord avec les verdicts de son propriétaire 14 fois sur 20 (une réponse triviale « toujours différer » en obtient 13), les rôles ont été réglés après avoir vu ces verdicts, et le retour arrière automatique n'a jamais été déclenché sur un vrai service. Il gère Docker Compose + Traefik, Docker Hub et ghcr.io.
+
+Testé : 198 tests automatiques contre un faux hôte Docker (enchaînement et refus), lancés en CI sur Python 3.9 et 3.12 ; quelques comportements ont aussi été vérifiés à la main sur un vrai Docker (voir les limites ci-dessous).
 
 ## Limites connues
 
@@ -26,8 +52,8 @@ Reprises de [docs/results.md](docs/results.md) (en anglais) ; aucune n'est cach�
 - **Un seul hôte.** Tout a été mesuré sur un homelab (65 conteneurs, un propriétaire, une semaine). Aucun deuxième hôte ne l'a fait tourner.
 - **Traefik seulement.** L'exposition vient des labels Traefik. Un autre reverse proxy, ou des routes définies dans un fichier, seront lus comme « non routé ».
 - **Docker Hub et ghcr.io seulement.** Tout autre registre donne « UNKNOWN », jamais une supposition.
-- **Le retour arrière automatique n'a jamais été déclenché en production.** Toutes les vraies mises à jour ont passé leur contrôle. Le retour arrière est couvert par des tests déterministes contre un *faux* hôte Docker (fichier compose restauré, ancienne image recréée, résultat journalisé), pas par une vraie panne sur un vrai hôte. À considérer comme non prouvé tant qu'il n'a pas été exercé.
-- **Les tests n'exécutent ni vrai Docker, ni Compose, ni Trivy, ni registre réel.** Ils prouvent l'enchaînement et les refus. Quelques comportements ont été vérifiés à la main, une fois, sur Docker 29.9.2 et Compose v5.6.1 (voir [docs/results.md](docs/results.md)) ; les autres versions ne sont pas couvertes et la CI ne répète pas ces vérifications.
+- **Le retour arrière automatique n'a jamais été déclenché sur un vrai service.** Il a été exercé une fois volontairement (2 novembre 2026) sur un conteneur jetable : la nouvelle image tournait mais ne servait rien, le contrôle de la route a échoué, l'ancienne image est revenue, la route a de nouveau répondu, le fichier compose a été restauré et le journal indiquait `rollback ok`. Cela ne prouve ni le cas « conteneur jamais sain », ni un `docker compose up` qui échoue pour une autre raison qu'une image absente, ni une vraie application. À considérer comme testé une fois, pas comme prouvé.
+- **Les tests automatiques n'exécutent ni vrai Docker, ni Compose, ni Trivy, ni registre réel.** Ils prouvent l'enchaînement et les refus contre un faux hôte. Quelques comportements ont été vérifiés à la main, une fois, sur Docker 29.9.2 et Compose v5.6.1 (voir [docs/results.md](docs/results.md)) ; les autres versions ne sont pas couvertes et la CI ne répète pas ces vérifications.
 - **Le score est un classement, pas un verdict.** Il est d'accord avec son propriétaire 14 fois sur 20 (la réponse triviale « toujours différer » : 13), sur vingt cas, avec des rôles choisis après avoir vu les verdicts. Aucun taux de faux négatifs n'a été mesuré.
 - **Une mise à jour en bonne santé mais cassée passe.** Le contrôle prouve que le conteneur est sain, qu'il exécute la nouvelle image et qu'une route répond ; il ne prouve pas que l'application fonctionne.
 - **Le retour arrière rétablit l'image, pas les données.** Une migration de base exécutée par la nouvelle version n'est pas annulée ; seules la sauvegarde ou l'instantané le peuvent.

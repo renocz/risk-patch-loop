@@ -1,10 +1,34 @@
 # risk-patch-loop
 
+[![tests](https://github.com/renocz/risk-patch-loop/actions/workflows/tests.yml/badge.svg)](https://github.com/renocz/risk-patch-loop/actions/workflows/tests.yml)
+
 **English** · [Français](README.fr.md)
 
 **Which container vulnerabilities actually matter on *your* host, is there a fix that really removes them, and can it be applied safely, with a human saying yes?**
 
-On the author's homelab, one night's scan returned 2,297 fixable HIGH/CRITICAL findings. That is not a to-do list. This tool turns it into one, using three things a scanner does not know: how exposed each container really is, whether a newer version really removes the finding, and what a safe update of one service looks like.
+In one minute:
+- A scanner gives you a list. On the author's homelab, one night's scan returned 2,297 fixable HIGH/CRITICAL findings. That is not a to-do list.
+- rpl ranks them by how exposed each container really is, checks that a newer image really removes the finding (scanned from the registry, nothing pulled), and prepares proposals.
+- Applying one is a separate command that touches **one service at a time**: snapshot, database dump, pinned image, dry run, recreate, health and route check, and a verified automatic rollback if the check fails.
+- Nothing happens without a human: the tool prepares, you decide.
+
+It is a proof of concept built and used for a week on one Docker host, with its limits [written down, not hidden](#known-limits). It is for someone who is comfortable reading 1,000 lines of Python, not a product.
+
+## Start here: pick your path
+
+- **I run Docker Compose behind Traefik and want to try it:** the [quick start](#quick-start), then the [files you write by hand](#files-you-write-by-hand-see-examples).
+- **I want to know what to trust:** [known limits](#known-limits), then [docs/results.md](docs/results.md): what was measured, what was not, and the defects the tool had when it was first used on a real host.
+- **I want to see how it decides:** [docs/design.md](docs/design.md) (the loop, the decisions, the limits).
+- **An AI agent drives my infrastructure:** give it the read-only steps and keep `--apply` behind an approval it cannot grant itself, see [With an AI agent](#with-an-ai-agent).
+
+## The loop in one picture
+
+Every night, read-only: rpl reads four things a scanner alone does not combine. After your yes, one service is updated, and if the check fails the old image comes back.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/loop-dark.png">
+  <img alt="Diagram: Trivy, Traefik, CISA KEV and the registries feed rpl, which writes proposals; after the human's yes, Docker Compose updates one service, and an automatic rollback restores the old image if the check fails." src="docs/loop.png">
+</picture>
 
 ```
 scan ──► inventory ──► risk score ──► fix check ──► proposals ──► you say yes ──► patch + automatic rollback
@@ -17,7 +41,9 @@ scan ──► inventory ──► risk score ──► fix check ──► prop
 
 ## Status: v0.9, one host, honest numbers
 
-Built and used for one week on one Docker host (65 containers, Traefik, one owner). **Read [docs/results.md](docs/results.md) before trusting it**: the score agrees with its owner's verdicts 14 times out of 20 (a trivial "always defer" answer gets 13), the roles were tuned after seeing those verdicts, and the automatic rollback has never fired in production. It handles Docker Compose + Traefik, Docker Hub and ghcr.io. It is a proof of concept for someone who is comfortable reading 1,000 lines of Python, not a product.
+Built and used for one week on one Docker host (65 containers, Traefik, one owner). **Read [docs/results.md](docs/results.md) before trusting it**: the score agrees with its owner's verdicts 14 times out of 20 (a trivial "always defer" answer gets 13), the roles were tuned after seeing those verdicts, and the automatic rollback has never fired on a real service. It handles Docker Compose + Traefik, Docker Hub and ghcr.io.
+
+Tested: 198 automated tests against a fake Docker host (sequencing and refusals), run in CI on Python 3.9 and 3.12; a few behaviours were also checked by hand on real Docker (see the limits below).
 
 ## Known limits
 
@@ -26,8 +52,8 @@ From [docs/results.md](docs/results.md); none of these is hidden, and none is fi
 - **One host.** Everything was measured on one homelab (65 containers, one owner, one week). No second host has run it.
 - **Traefik only.** Exposure comes from Traefik labels. Another reverse proxy, or routes defined in a file, will read as "not routed".
 - **Docker Hub and ghcr.io only.** Any other registry gives "UNKNOWN", never a guess.
-- **The automatic rollback has never fired in production.** Every real update passed its check. The rollback is covered by deterministic tests against a *fake* Docker host (compose file restored, old image recreated, result journaled), not by a real failure on a real host. Treat it as unproven until it has been exercised.
-- **The tests do not run real Docker, Compose, Trivy or a real registry.** They prove the sequencing and the refusals. A few behaviours were checked by hand, once, against Docker 29.9.2 and Compose v5.6.1 (see [docs/results.md](docs/results.md)); other versions are not covered, and CI does not repeat those checks.
+- **The automatic rollback has never fired on a real service.** It was exercised once on purpose (2 November 2026) on a disposable container: the new image ran but served nothing, the route check failed, the old image came back, the route answered again, the compose file was restored and the journal said `rollback ok`. That does not prove the "container unhealthy" path, a failed `docker compose up` for a reason other than a missing image, or a real application. Treat it as tested once, not as proven.
+- **The automated tests do not run real Docker, Compose, Trivy or a real registry.** They prove the sequencing and the refusals against a fake host. A few behaviours were checked by hand, once, against Docker 29.9.2 and Compose v5.6.1 (see [docs/results.md](docs/results.md)); other versions are not covered, and CI does not repeat those checks.
 - **The score is a ranking, not a verdict.** It agrees with its owner 14 times out of 20 (the trivial "always defer" answer: 13), on twenty cases, with roles chosen after seeing the verdicts. No false-negative rate has been measured.
 - **Healthy-but-broken updates pass.** The check proves the container is healthy, runs the new image, and one route answers; it does not prove the application works.
 - **The rollback restores the image, not the data.** A database migration run by the new version is not undone; only the dump or the snapshot can do that.
