@@ -212,6 +212,31 @@ class DefectRegressions(PatchCase):
         self.assertEqual(host.running, OLD)
         self.assertNotIn("ok", [e["result"] for e in self.journal()], "a failed update must not be journaled as ok")
 
+    def test_failing_dry_run_stops_the_update(self):
+        """Defect 2: the dry run's exit code was ignored, so a dry run that failed (compose error, flag unsupported by an old
+        Compose) silently disabled the 'only this service is recreated' safety check and the update went on."""
+        host = self.host(dry_rc=1)
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("dry run FAILED", out)
+        self.assertEqual(self.compose_text(), self.original)
+        self.assertEqual(host.up_images, [])
+
+    def test_two_containers_are_detected_whatever_prefix_compose_prints(self):
+        """Defect 2b: container names were taken as the 2nd word of the line, which is 'MODE' when Compose prefixes the line with
+        'DRY-RUN MODE -': the set then always had one element and the two-container refusal could never fire."""
+        host = self.host(dry_recreates=["app", "app-db-1"], dry_prefix="DRY-RUN MODE -  ")
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("more than one container", out)
+        self.assertEqual(host.up_images, [])
+
+    def test_the_planned_container_is_reported_by_name_with_a_prefix(self):
+        host = self.host(dry_prefix="DRY-RUN MODE -  ")
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("dry run would recreate ['app']", out)
+
 
 if __name__ == "__main__":
     unittest.main()

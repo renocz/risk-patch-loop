@@ -14,6 +14,7 @@ import argparse
 import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +23,7 @@ import time
 from . import config
 
 REFUSED_NAMES = ("gluetun",)
+RECREATE = re.compile(r"Container\s+(\S+)\s+Recreate")     # "[DRY-RUN MODE - ]Container <name>  Recreate[d|ing]"
 
 
 class Host:
@@ -179,7 +181,11 @@ def main(argv, host=HOST):
         return 1
     # 4. dry run: only this service may be recreated
     dry = compose(a.compose, "up", "-d", "--no-deps", "--dry-run", a.service, host=host)
-    recreated = {l.split()[1] for l in (dry.stdout + dry.stderr).splitlines() if "Recreate" in l}
+    if dry.returncode:
+        shutil.copy2(backup, a.compose)
+        print("dry run FAILED: old file restored: " + (dry.stderr or dry.stdout).strip()[-200:])
+        return 1
+    recreated = set(RECREATE.findall(dry.stdout + dry.stderr))
     print("dry run would recreate", sorted(recreated))
     if len(recreated) > 1:
         shutil.copy2(backup, a.compose)

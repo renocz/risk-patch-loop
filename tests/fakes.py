@@ -111,13 +111,14 @@ class FakeHost:
 
     def __init__(self, compose_file, service="app", running_image=None, *, unhealthy_images=(), route_codes=None,
                  up_fails_for=(), vpn=False, network_mode="", config_ok=True, config_rejects=(), dry_recreates=None,
-                 dry_rc=0, dump_ok=True, snapshot_rc=0):
+                 dry_rc=0, dump_ok=True, snapshot_rc=0, dry_prefix=""):
         self.compose_file, self.service = compose_file, service
         self.running = running_image or self._file_image()
         self.unhealthy_images, self.route_codes = set(unhealthy_images), route_codes or {}
         self.up_fails_for = set(up_fails_for)
         self.network_mode, self.config_ok, self.config_rejects = ("service:gluetun" if vpn else network_mode), config_ok, set(config_rejects)
         self.dry_recreates, self.dry_rc, self.dump_ok, self.snapshot_rc = dry_recreates, dry_rc, dump_ok, snapshot_rc
+        self.dry_prefix = dry_prefix
         self.calls, self.clock = [], 1_000_000.0
         self.up_images = []                      # image each `compose up` was asked for, in order
 
@@ -194,7 +195,7 @@ class FakeHost:
             return done(0, json.dumps({"services": {self.service: {"image": self._file_image(), "network_mode": self.network_mode}}}))
         if k == "dry-run":
             names = self.dry_recreates if self.dry_recreates is not None else [self.service]
-            return done(self.dry_rc, "", "\n".join(f" Container {n}  Recreate" for n in names))
+            return done(self.dry_rc, "", "\n".join(f" {self.dry_prefix}Container {n}  Recreate" for n in names))
         if k == "up":
             image = self._file_image()
             self.up_images.append(image)
