@@ -37,7 +37,7 @@ Applying "act" findings blindly (bump the tag) would have changed nothing for 5 
 
 paperless (with a database dump), traefik (all routes cut for a few seconds), radarr, sonarr, bazarr (same application version, rebuilt image). After each: container healthy, route answered with the expected status, and a local scan of the running image showed the exploited-in-the-wild finding gone. Outages: 5 to 40 seconds each.
 
-**The automatic rollback has never fired in production.** Every update passed its check. The rollback path is covered by code review and by the dry run, not by a real failure. Treat it as unproven until it has been exercised.
+**The automatic rollback has never fired in production.** Every update passed its check. It was exercised once on purpose (2 November 2026) on a disposable container, not a real service: `rpl patch` moved a service from an image that serves HTTP 200 to an image that runs but serves nothing. The route check failed, the tool put the old image back, the route answered 200 again, the compose file was restored, the journal recorded `rollback ok`, and the exit code was 2. What this does not prove: the "container unhealthy" failure path was not replayed, a rollback does not restore data, and one disposable service is not a real application. Treat it as tested once, not as proven.
 
 ## Defects the tool had, found by using it
 
