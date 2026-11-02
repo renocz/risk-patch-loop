@@ -26,8 +26,11 @@ import time
 from . import config
 
 REFUSED_NAMES = ("gluetun",)
-NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")                      # Docker / Compose / PostgreSQL identifiers
-IMAGE_REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@+-]*$")             # no whitespace, no newline, nothing a YAML line could carry
+# All checked with fullmatch: '$' would accept a trailing newline.
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")                        # Docker / Compose / PostgreSQL identifiers
+IMAGE_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/@+-]*")               # no whitespace, no newline, nothing a YAML line could carry
+HOST_NAME = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*(?::[0-9]{1,5})?")
+HTTP_CODES = re.compile(r"[1-5][0-9]{2}(?: +[1-5][0-9]{2})*")
 RECREATE = re.compile(r"Container\s+(\S+)\s+Recreate")     # "[DRY-RUN MODE - ]Container <name>  Recreate[d|ing]"
 
 
@@ -124,10 +127,13 @@ def pin(compose_file, old, new, apply=False, host=HOST, service=None):
 
 def invalid_arguments(a):
     """A reason to refuse the arguments before anything is run, or None."""
-    for flag, value, rx in (("--service", a.service, NAME), ("--db-container", a.db_container, NAME), ("--db-user", a.db_user, NAME),
-                            ("--db-name", a.db_name, NAME), ("--old", a.old, IMAGE_REF), ("--new", a.new, IMAGE_REF)):
-        if value is not None and not rx.match(value):
-            return f"{flag} {value!r} is not a valid {'image reference' if rx is IMAGE_REF else 'name'}"
+    for flag, value, rx, what in (("--service", a.service, NAME, "name"), ("--db-container", a.db_container, NAME, "name"),
+                                  ("--db-user", a.db_user, NAME, "name"), ("--db-name", a.db_name, NAME, "name"),
+                                  ("--old", a.old, IMAGE_REF, "image reference"), ("--new", a.new, IMAGE_REF, "image reference"),
+                                  ("--route", a.route, HOST_NAME, "host name (letters, digits, dots, hyphens, optional :port)"),
+                                  ("--codes", a.codes, HTTP_CODES, "list of HTTP status codes separated by spaces, e.g. '200 302'")):
+        if value is not None and not rx.fullmatch(value):
+            return f"{flag} {value!r} is not a valid {what}"
     given = [a.db_container, a.db_user, a.db_name]
     if any(given) and not all(given):
         return "--db-container, --db-user and --db-name go together"

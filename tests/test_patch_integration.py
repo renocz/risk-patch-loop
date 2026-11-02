@@ -502,5 +502,54 @@ class InputValidation(PatchCase):
         self.assertEqual(rc, 0, out)
 
 
+class RouteAndCodesAreValidated(PatchCase):
+    """Council point 4: --route goes into a curl 'Host:' header and --codes is compared with curl's answer; neither was validated.
+    (Found on the way: the earlier name checks used re.match with '$', which accepts a trailing newline.)"""
+
+    BASE, go, argv, assert_refused = InputValidation.BASE, InputValidation.go, InputValidation.argv, InputValidation.assert_refused
+
+    def test_invalid_routes_are_refused(self):
+        for bad in ("app.example.test\nX-Evil: 1", "app example.test", "a;b", "", "-bad.example.test", "app.example.test:abc",
+                    "app..example.test", "app.example.test\n", "app.example.test:", "http://app.example.test", "app.example.test/path", "a" * 64 + ".example.test"):
+            with self.subTest(route=repr(bad)):
+                host = self.host()
+                argv = self.argv()
+                argv[argv.index("--route") + 1] = bad
+                rc, out = self.go(host, argv)
+                self.assert_refused(host, rc, out)
+                if rc != 2:
+                    self.assertIn("--route", out)
+
+    def test_invalid_codes_are_refused(self):
+        for bad in ("", " ", "200\n302", "2000", "20", "abc", "200;302", "200,302", "200 \n", "99 200", "600", "200\t302"):
+            with self.subTest(codes=repr(bad)):
+                host = self.host()
+                argv = self.argv()
+                argv[argv.index("--codes") + 1] = bad
+                rc, out = self.go(host, argv)
+                self.assert_refused(host, rc, out)
+                if rc != 2:
+                    self.assertIn("--codes", out)
+
+    def test_valid_routes_and_codes_pass(self):
+        for route in ("app.example.test", "app.example.test:8443", "localhost", "app-1.example.test", "A.Example.test"):
+            for codes in ("200", "200 302", "401", "200  302"):
+                with self.subTest(route=route, codes=codes):
+                    host = self.host()
+                    argv = self.argv(**{"--db-container": None, "--db-user": None, "--db-name": None})
+                    argv[argv.index("--route") + 1] = route
+                    argv[argv.index("--codes") + 1] = codes
+                    self.assertEqual(self.go(host, argv + ["--dry"])[0], 0)
+
+    def test_trailing_newline_is_refused_in_names_and_references(self):
+        for flag in ("--service", "--db-container", "--db-user", "--db-name", "--new"):
+            with self.subTest(flag=flag):
+                host = self.host()
+                value = (NEW if flag == "--new" else "app") + "\n"
+                rc, out = self.go(host, self.argv(**{flag: value}))
+                self.assert_refused(host, rc, out)
+                self.assertIn("REFUSED: " + flag, out, "refused for the right reason, not as a side effect")
+
+
 if __name__ == "__main__":
     unittest.main()
