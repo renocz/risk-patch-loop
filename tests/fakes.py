@@ -171,7 +171,7 @@ class FakeHost:
 
     def __init__(self, compose_file, service="app", running_image=None, *, unhealthy_images=(), route_codes=None,
                  up_fails_for=(), up_noop_for=(), vpn=False, network_mode="", config_ok=True, config_rejects=(), dry_recreates=None,
-                 dry_rc=0, dump_ok=True, snapshot_rc=0, dry_prefix="", container=None, dry_raw=None):
+                 dry_rc=0, dump_ok=True, snapshot_rc=0, dry_prefix="", container=None, dry_raw=None, rebuilt_on_up=None):
         self.compose_file, self.service = compose_file, service
         self.container = container or service
         self.running = running_image or self._file_image()
@@ -180,6 +180,8 @@ class FakeHost:
         self.network_mode, self.config_ok, self.config_rejects = ("service:gluetun" if vpn else network_mode), config_ok, set(config_rejects)
         self.dry_recreates, self.dry_rc, self.dump_ok, self.snapshot_rc = dry_recreates, dry_rc, dump_ok, snapshot_rc
         self.dry_prefix, self.dry_raw = dry_prefix, dry_raw
+        self.ids = {}                            # image ref -> image ID override
+        self.rebuilt_on_up = rebuilt_on_up or {}  # image ref -> ID the ref resolves to after a `compose up` of it
         self.calls, self.clock = [], 1_000_000.0
         self.up_images = []                      # image each `compose up` was asked for, in order
 
@@ -270,6 +272,8 @@ class FakeHost:
             self.up_images.append(image)
             if image in self.up_fails_for:
                 return done(1, "", f"Error response from daemon: manifest for {image} not found")
+            if image in self.rebuilt_on_up:
+                self.ids[image] = self.rebuilt_on_up[image]
             if image not in self.up_noop_for:
                 self.running = image
             return done(0, "", f" Container {self.container}  Started")
@@ -277,7 +281,7 @@ class FakeHost:
             return done(0, "cid-1\n" if self.running else "")
         if k == "inspect":
             healthy = self.running not in self.unhealthy_images
-            return done(0, json.dumps([{"Name": "/" + self.container, "Image": image_id(self.running), "Config": {"Image": self.running},
+            return done(0, json.dumps([{"Name": "/" + self.container, "Image": self.ids.get(self.running) or image_id(self.running), "Config": {"Image": self.running},
                                         "State": {"Running": True, "Health": {"Status": "healthy" if healthy else "starting"}}}]))
         if k == "route":
             code = self.route_codes.get(self.running, 200)

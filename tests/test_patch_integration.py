@@ -58,7 +58,7 @@ class SuccessfulUpdate(PatchCase):
         host = self.host()
         rc, out = self.run_patch(host)
         self.assertEqual((rc, out.strip().splitlines()[-1]), (0, "OK"), out)
-        self.assertEqual(host.kinds(), ["inspect-config", "snapshot", "dump", "dump-copy", "dump-verify", "validate", "dry-run", "ps", "inspect", "up", "ps", "inspect", "route"])
+        self.assertEqual(host.kinds(), ["inspect-config", "snapshot", "dump", "dump-copy", "dump-verify", "validate", "dry-run", "ps", "inspect", "ps", "inspect", "up", "ps", "inspect", "ps", "inspect", "route"])
 
     def test_new_image_is_pinned_and_running_and_the_old_file_is_kept(self):
         host = self.host()
@@ -192,9 +192,9 @@ class AutomaticRollback(PatchCase):
     def test_rollback_that_itself_fails_is_flagged_for_a_human(self):
         host = self.host(unhealthy_images={NEW, OLD})
         rc, out = self.run_patch(host)
-        self.assertEqual(rc, 2)
+        self.assertEqual(rc, 4)
         self.assertEqual(self.compose_text(), self.original)
-        self.assertEqual(self.journal()[-1]["result"], "rollback CHECK BY HAND")
+        self.assertEqual(self.journal()[-1]["result"], "rollback FAILED: CHECK BY HAND")
         self.assertNotIn("rollback ok", json.dumps(self.journal()))
 
 
@@ -306,6 +306,51 @@ class DryRunMustShowExactlyOneRecreation(PatchCase):
         host = self.host(dry_recreates=["app"])
         host.running = None                                    # `ps -a -q` finds nothing
         self.assert_refused(host, *self.run_patch(host))
+
+
+class RollbackAndSuccessAreVerifiedByImage(PatchCase):
+    """Council point 3: the rollback's own `compose up` exit code was ignored and the check was only health + route, so a failed
+    rollback that left the NEW image running, healthy and answering was journaled 'rollback ok'; likewise a 'successful' update
+    was never checked to be running the new image."""
+
+    def flapping_route(self):
+        return {NEW: ["502"] * 8 + ["200"]}                     # fails during the update's check window, answers 200 afterwards
+
+    def test_failed_rollback_up_with_the_new_image_still_healthy_and_answering_is_not_rollback_ok(self):
+        host = self.host(route_codes=self.flapping_route(), up_fails_for={OLD})
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 4, out)
+        self.assertIn("CHECK BY HAND", out)
+        self.assertEqual(self.journal()[-1]["result"], "rollback FAILED: CHECK BY HAND")
+        self.assertEqual(host.running, NEW, "the scenario: the new image really is still the one running")
+
+    def test_rollback_that_restores_the_old_image_is_ok_and_says_which_image_runs(self):
+        host = self.host(unhealthy_images={NEW})
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 2, out)
+        self.assertEqual(self.journal()[-1]["result"], "rollback ok")
+        self.assertIn(OLD, out.splitlines()[-1])
+
+    def test_rollback_to_the_same_ref_but_a_different_image_id_is_not_ok(self):
+        host = self.host(unhealthy_images={NEW}, rebuilt_on_up={OLD: "sha256:somethingelse"})
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 4, out)
+        self.assertEqual(self.journal()[-1]["result"], "rollback FAILED: CHECK BY HAND")
+
+    def test_update_that_leaves_the_old_image_running_is_not_ok(self):
+        host = self.host(up_noop_for={NEW})
+        rc, out = self.run_patch(host)
+        self.assertNotEqual(out.strip().splitlines()[-1], "OK")
+        self.assertEqual(rc, 2, out)
+        self.assertIn(f"runs {OLD}, not {NEW}", out)
+        self.assertNotIn("ok", [e["result"] for e in self.journal()])
+        self.assertEqual(self.compose_text(), self.original)
+
+    def test_successful_update_is_checked_against_the_new_image_only(self):
+        host = self.host()
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"image {NEW}", out)
 
 
 class PinIsBoundToTheService(PatchCase):

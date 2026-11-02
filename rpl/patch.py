@@ -1,11 +1,14 @@
 """Step 6, patch ONE service, with automatic rollback if the check fails.
 
 Sequence: snapshot -> (database dump) -> pin the new image in the compose file -> dry run (only this service may be recreated) -> recreate ->
-check (container running and healthy, AND a route through the reverse proxy answers with an expected status) -> on failure: restore the old
+check (container healthy, running the NEW image, AND a route through the reverse proxy answers with an expected status) -> on failure: restore the old
 compose file, recreate the service, check again, record the result.
 
 Never touches a service that shares another container's network namespace through a VPN container whose name contains "gluetun":
 those need their own procedure and an explicit decision.
+
+Exit codes: 0 updated; 1 refused or stopped before the service was touched; 2 the update failed its check and was rolled back (the old image
+runs again, verified); 3 refused: VPN; 4 the update failed AND the rollback could not be verified: check by hand.
 
 Limits, written down: the rollback puts the previous IMAGE back, not the data (a database migrated by the new version needs the dump or the
 snapshot); the route check tests one route, not the whole application.
@@ -159,6 +162,19 @@ def container_names(compose_file, service, host=HOST):
         return set()
 
 
+def running_image(compose_file, service, host=HOST):
+    """{"ref": image reference the container was created with, "id": image ID} of the service's running container, or None."""
+    ids = compose(compose_file, "ps", "-q", service, host=host).stdout.split()
+    if not ids:
+        return None
+    r = host.run(["docker", "inspect", ids[0]])
+    try:
+        c = json.loads(r.stdout)[0]
+        return {"ref": c["Config"]["Image"], "id": c["Image"]}
+    except (ValueError, KeyError, IndexError, TypeError):
+        return None
+
+
 def shares_vpn_network(compose_file, service, host=HOST):
     cfg = compose(compose_file, "config", "--format", "json", host=host)
     if cfg.returncode:
@@ -281,29 +297,42 @@ def main(argv, host=HOST):
               f"({', '.join(sorted(expected)) or 'no container found for it'}); it showed {', '.join(sorted(recreated)) or 'none'}: old file restored")
         return 1
     # 5. recreate and check
+    before = running_image(a.compose, a.service, host)
     u = compose(a.compose, "up", "-d", "--no-deps", a.service, host=host)
     print((u.stdout + u.stderr).strip()[-300:])
+    img = None
     if u.returncode:
         # e.g. the new image cannot be pulled: Docker leaves the OLD container running, which would pass the check below
         ok1, e1 = False, "docker compose up failed: " + (u.stderr or u.stdout).strip()[-200:]
         print(e1)
     else:
         ok1, e1 = healthy(a.compose, a.service, cfg["health_timeout_s"], host)
+        if ok1:
+            img = running_image(a.compose, a.service, host)
+            if not img or img["ref"] != a.new:
+                ok1, e1 = False, f"container runs {img['ref'] if img else 'an unknown image'}, not {a.new}"
     ok2, c2 = route_ok(cfg["route_check_url"], a.route, codes, cfg["route_timeout_s"], host) if ok1 else (False, "-")
-    print(f"check: container {e1}; route {a.route}: HTTP {c2} (expected {codes})")
+    print(f"check: container {e1}; route {a.route}: HTTP {c2} (expected {codes})" + (f"; image {img['ref']}" if ok1 and img else ""))
     if ok1 and ok2:
         journal(cfg, {"ts": host.now(), "service": a.service, "from": a.old, "to": a.new, "result": "ok"})
         print("OK")
         return 0
-    # 6. rollback
+    # 6. rollback: success means the OLD image is the one running (same reference, same image ID as before), healthy, and the route answers
     print("CHECK FAILED: ROLLBACK")
     shutil.copy2(backup, a.compose)
-    compose(a.compose, "up", "-d", "--no-deps", a.service, host=host)
-    okb, eb = healthy(a.compose, a.service, cfg["health_timeout_s"], host)
+    ru = compose(a.compose, "up", "-d", "--no-deps", a.service, host=host)
+    if ru.returncode:
+        okb, eb = False, "docker compose up failed: " + (ru.stderr or ru.stdout).strip()[-200:]
+    else:
+        okb, eb = healthy(a.compose, a.service, cfg["health_timeout_s"], host)
+    img = running_image(a.compose, a.service, host) if okb else None
+    if okb and (not img or img["ref"] != a.old or (before and img["id"] != before["id"])):
+        okb, eb = False, f"container runs {img['ref'] + ' (' + img['id'] + ')' if img else 'an unknown image'}, not the original {a.old}"
     okr, cr = route_ok(cfg["route_check_url"], a.route, codes, cfg["route_timeout_s"], host) if okb else (False, "-")
-    print(f"after rollback: container {eb}; route HTTP {cr}")
-    journal(cfg, {"ts": host.now(), "service": a.service, "from": a.old, "to": a.new, "result": "rollback " + ("ok" if okb and okr else "CHECK BY HAND")})
-    return 2
+    good = okb and okr
+    print(f"after rollback: container {eb}; route HTTP {cr}" + (f"; image {img['ref']}" if good else "") + ("" if good else ": ROLLBACK FAILED, CHECK BY HAND"))
+    journal(cfg, {"ts": host.now(), "service": a.service, "from": a.old, "to": a.new, "result": "rollback ok" if good else "rollback FAILED: CHECK BY HAND"})
+    return 2 if good else 4
 
 
 if __name__ == "__main__":
