@@ -27,10 +27,11 @@ Reprises de [docs/results.md](docs/results.md) (en anglais) ; aucune n'est cach�
 - **Traefik seulement.** L'exposition vient des labels Traefik. Un autre reverse proxy, ou des routes définies dans un fichier, seront lus comme « non routé ».
 - **Docker Hub et ghcr.io seulement.** Tout autre registre donne « UNKNOWN », jamais une supposition.
 - **Le retour arrière automatique n'a jamais été déclenché en production.** Toutes les vraies mises à jour ont passé leur contrôle. Le retour arrière est couvert par des tests déterministes contre un *faux* hôte Docker (fichier compose restauré, ancienne image recréée, résultat journalisé), pas par une vraie panne sur un vrai hôte. À considérer comme non prouvé tant qu'il n'a pas été exercé.
-- **Les tests n'exécutent ni vrai Docker, ni Compose, ni Trivy, ni registre réel.** Ils prouvent l'enchaînement et les refus ; ils ne peuvent pas prouver que la vraie sortie de Compose ressemble à ce que l'analyseur attend.
+- **Les tests n'exécutent ni vrai Docker, ni Compose, ni Trivy, ni registre réel.** Ils prouvent l'enchaînement et les refus. Quelques comportements ont été vérifiés à la main, une fois, sur Docker 29.9.2 et Compose v5.6.1 (voir [docs/results.md](docs/results.md)) ; les autres versions ne sont pas couvertes et la CI ne répète pas ces vérifications.
 - **Le score est un classement, pas un verdict.** Il est d'accord avec son propriétaire 14 fois sur 20 (la réponse triviale « toujours différer » : 13), sur vingt cas, avec des rôles choisis après avoir vu les verdicts. Aucun taux de faux négatifs n'a été mesuré.
-- **Une mise à jour en bonne santé mais cassée passe.** Le contrôle prouve que le conteneur est sain et qu'une route répond, pas que l'application fonctionne.
-- **Le retour arrière rétablit l'image, pas les données.** Une base migrée par la nouvelle version a besoin de la sauvegarde ou de l'instantané.
+- **Une mise à jour en bonne santé mais cassée passe.** Le contrôle prouve que le conteneur est sain, qu'il exécute la nouvelle image et qu'une route répond ; il ne prouve pas que l'application fonctionne.
+- **Le retour arrière rétablit l'image, pas les données.** Une migration de base exécutée par la nouvelle version n'est pas annulée ; seules la sauvegarde ou l'instantané le peuvent.
+- **Les images tirées ne sont pas vérifiées.** L'outil fait confiance au tag et au registre : pas de vérification de signature (cosign ou équivalent), et pour un tag mobile seul le digest que le registre indique à ce moment est épinglé. Un registre ou un mainteneur compromis échappe à ce qu'il peut détecter.
 - **Les conteneurs VPN sont reconnus par leur nom** (« gluetun »), pas par ce qu'ils font.
 
 ## Feuille de route vers la 1.0
@@ -40,6 +41,8 @@ La 1.0 sort quand les trois conditions sont remplies, chacune avec ses preuves d
 1. **Retour arrière exercé en conditions réelles.** Au moins 3 retours arrière automatiques sur un vrai hôte, couvrant un conteneur qui ne devient jamais sain, une route qui répond un statut inattendu, et un `docker compose up` qui échoue ; chacun journalisé `rollback ok`, avec l'ancienne image en service et sa route qui répond ensuite. Journaux publiés.
 2. **Un deuxième hôte.** Au moins 4 semaines consécutives sur un second hôte indépendant (autre propriétaire, ou reverse proxy autre que Traefik) avec 20 conteneurs ou plus, présentées dans le même format que les chiffres du premier hôte.
 3. **Un taux de faux négatifs mesuré.** Un échantillon étiqueté d'au moins 100 constats, avec les verdicts d'au moins 2 relecteurs, tiré après gel des rôles et des seuils (pas les 20 cas ayant servi au réglage). Publier combien de verdicts « agir » le score classe sous ACT, avec un intervalle de confiance. Cible : au plus 10 % des verdicts « agir » manqués. Si la cible n'est pas atteinte, le score change et la mesure est refaite avant la 1.0.
+   - *Vérité terrain :* un constat « méritait ACT » quand au moins 2 relecteurs répondent « agir » indépendamment, sur des critères écrits **avant** l'étiquetage : exploitable depuis l'endroit où le conteneur est exposé (niveau d'exposition de l'inventaire, pas deviné), un correctif existe, et le composant vulnérable est atteignable dans ce service. Les désaccords sont tranchés par un troisième relecteur et rapportés, pas cachés. Les relecteurs ne voient pas le score.
+   - *Dénominateur :* les verdicts « agir » de cet échantillon étiqueté, tiré au hasard (graine fixée et publiée) parmi tous les constats des scans d'au moins 2 hôtes, stratifié pour que les constats classés WATCH ou PLAN par le score soient aussi nombreux que ceux classés ACT ; le taux est « verdicts agir classés sous ACT » / « verdicts agir », les deux nombres affichés, pas seulement le pourcentage.
 
 ## Démarrage rapide
 
@@ -76,10 +79,11 @@ python -m rpl proposals --apply myapp --dry      # puis sans --dry
 
 - Un scan qui n'a pas pu faire son travail (base périmée, liste KEV indisponible, image non analysée) n'est pas « OK », et les constats ne sont pas réécrits.
 - `rpl patch` refuse de démarrer sans commande d'instantané, sauf `--no-snapshot` ; un instantané ou une sauvegarde de base en échec arrête tout avant tout changement.
-- L'essai à blanc doit montrer que seul le service à mettre à jour serait recréé.
+- L'essai à blanc doit montrer exactement une recréation, celle du conteneur du service ; tout autre cas (aucune, deux, un autre service, sortie illisible) arrête tout et restaure le fichier compose.
 - Un conteneur VPN, ou un service qui partage son réseau, est refusé.
 - `rpl proposals --apply` prend les paramètres de la proposition enregistrée, rien de libre, et refuse une proposition vieille de plus de 36 heures, ou dont le fichier a été modifié après son calcul (contrôle SHA-256 : intégrité, pas authentification).
-- `rpl patch` valide les noms de service, de base et d'image avant de lancer quoi que ce soit, et refuse un service que le fichier Compose ne définit pas. Un `docker compose up` ou un essai à blanc en échec compte comme une mise à jour échouée, pas comme un succès.
+- `rpl patch` valide les noms de service, de base et d'image avant de lancer quoi que ce soit, et refuse un service que le fichier Compose ne définit pas. Un `docker compose up` ou un essai à blanc en échec compte comme une mise à jour échouée, pas comme un succès. L'épinglage est lié au service demandé : l'image que Compose résout pour lui doit être égale à `--old`, et la ligne modifiée doit se trouver dans son bloc. `--route` et `--codes` sont validés.
+- Après une mise à jour, le conteneur doit exécuter la nouvelle image ; après un retour arrière, il doit exécuter la référence d'origine avec le même identifiant d'image, sinon le résultat est `rollback FAILED: CHECK BY HAND` (code de sortie 4 ; 2 signifie un retour arrière vérifié).
 
 ## Avec un agent IA
 

@@ -27,10 +27,11 @@ From [docs/results.md](docs/results.md); none of these is hidden, and none is fi
 - **Traefik only.** Exposure comes from Traefik labels. Another reverse proxy, or routes defined in a file, will read as "not routed".
 - **Docker Hub and ghcr.io only.** Any other registry gives "UNKNOWN", never a guess.
 - **The automatic rollback has never fired in production.** Every real update passed its check. The rollback is covered by deterministic tests against a *fake* Docker host (compose file restored, old image recreated, result journaled), not by a real failure on a real host. Treat it as unproven until it has been exercised.
-- **The tests do not run real Docker, Compose, Trivy or a real registry.** They prove the sequencing and the refusals; they cannot prove that real Compose output looks the way the parser expects.
+- **The tests do not run real Docker, Compose, Trivy or a real registry.** They prove the sequencing and the refusals. A few behaviours were checked by hand, once, against Docker 29.9.2 and Compose v5.6.1 (see [docs/results.md](docs/results.md)); other versions are not covered, and CI does not repeat those checks.
 - **The score is a ranking, not a verdict.** It agrees with its owner 14 times out of 20 (the trivial "always defer" answer: 13), on twenty cases, with roles chosen after seeing the verdicts. No false-negative rate has been measured.
-- **Healthy-but-broken updates pass.** The check proves the container is healthy and one route answers, not that the application works.
-- **The rollback restores the image, not the data.** A database migrated by the new version needs the dump or the snapshot.
+- **Healthy-but-broken updates pass.** The check proves the container is healthy, runs the new image, and one route answers; it does not prove the application works.
+- **The rollback restores the image, not the data.** A database migration run by the new version is not undone; only the dump or the snapshot can do that.
+- **Pulled images are not verified.** The tool trusts the tag and the registry: no signature check (cosign or similar), and for a moving tag only the digest the registry reports at that moment is pinned. A compromised registry or maintainer is outside what it can detect.
 - **VPN containers are recognised by name** ("gluetun"), not by what they do.
 
 ## Roadmap to 1.0
@@ -40,6 +41,8 @@ From [docs/results.md](docs/results.md); none of these is hidden, and none is fi
 1. **Rollback exercised in real conditions.** At least 3 automatic rollbacks on a real host, covering a container that never becomes healthy, a route that answers an unexpected status, and a `docker compose up` that fails; each journaled `rollback ok`, with the old image running and its route answering afterwards. Logs published.
 2. **A second host.** At least 4 consecutive weeks on a second, independent host (a different owner, or a reverse proxy other than Traefik) with 20 or more containers, reported in the same format as the first host's numbers.
 3. **A measured false-negative rate.** A labelled sample of at least 100 findings, with verdicts from at least 2 reviewers, drawn after the roles and thresholds are frozen (not the 20 cases used for tuning). Publish how many "act" verdicts the score ranks below ACT, with a confidence interval. Target: at most 10% of "act" verdicts missed. If the target is not met, the score changes and the measurement is repeated before 1.0.
+   - *Ground truth:* a finding "deserved ACT" when at least 2 reviewers independently answer "act" on written criteria fixed **before** labelling: exploitable from where the container is exposed (exposure level from the inventory, not guessed), a fix exists, and the vulnerable component is reachable in this service. Disagreements are resolved by a third reviewer and reported, not hidden. Reviewers do not see the score.
+   - *Denominator:* the "act" verdicts of that labelled sample, drawn at random (fixed seed, published) from all findings of at least 2 hosts' scans, stratified so that findings the score ranked WATCH or PLAN are as numerous as those it ranked ACT; the rate is "act verdicts ranked below ACT" / "act verdicts", with the count of both numbers shown, not only the percentage.
 
 ## Quick start
 
@@ -76,10 +79,11 @@ python -m rpl proposals --apply myapp --dry      # then without --dry
 
 - A scan that cannot do its job (stale database, KEV list unavailable, an image not analysed) is not "OK", and findings are not rewritten.
 - `rpl patch` refuses to start without a snapshot command, unless you say `--no-snapshot`; a failed snapshot or database dump stops everything before any change.
-- The dry run must show that only the service to update would be recreated.
+- The dry run must show exactly one recreation, that of the service's own container; anything else (none, two, another service, unreadable output) stops everything and restores the compose file.
 - A VPN container, or a service sharing its network, is refused.
 - `rpl proposals --apply` takes the parameters from the stored proposal, nothing free-form, and refuses a proposal older than 36 hours, or whose file was modified after it was computed (SHA-256 check: integrity, not authentication).
-- `rpl patch` validates service, database and image names before running anything, and refuses a service the Compose file does not define. A failed `docker compose up` or a failed dry run counts as a failed update, not as success.
+- `rpl patch` validates service, database and image names before running anything, and refuses a service the Compose file does not define. A failed `docker compose up` or a failed dry run counts as a failed update, not as success. The pin is bound to the requested service: the image Compose resolves for it must equal `--old`, and the edited line must lie inside its block. `--route` and `--codes` are validated.
+- After an update the container must run the new image; after a rollback it must run the original reference with the same image ID, otherwise the result is `rollback FAILED: CHECK BY HAND` (exit code 4; 2 means a verified rollback).
 
 ## With an AI agent
 
