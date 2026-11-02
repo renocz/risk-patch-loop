@@ -37,7 +37,15 @@ Applying "act" findings blindly (bump the tag) would have changed nothing for 5 
 
 paperless (with a database dump), traefik (all routes cut for a few seconds), radarr, sonarr, bazarr (same application version, rebuilt image). After each: container healthy, route answered with the expected status, and a local scan of the running image showed the exploited-in-the-wild finding gone. Outages: 5 to 40 seconds each.
 
-**The automatic rollback has never fired in production.** Every update passed its check. It was exercised once on purpose (2 November 2026) on a disposable container, not a real service: `rpl patch` moved a service from an image that serves HTTP 200 to an image that runs but serves nothing. The route check failed, the tool put the old image back, the route answered 200 again, the compose file was restored, the journal recorded `rollback ok`, and the exit code was 2. What this does not prove: the "container unhealthy" failure path was not replayed, a rollback does not restore data, and one disposable service is not a real application. Treat it as tested once, not as proven.
+**The automatic rollback has never fired in production.** Every update passed its check. It was exercised three times on purpose (2 November 2026) on a disposable service of the real Docker host, not on a real application. Each time `rpl patch` moved the service from an image that serves HTTP 200 to a broken one, the check failed, the old image came back (same image ID as before the update), the route answered 200 again, the compose file was restored, the journal recorded `rollback ok`, and the exit code was 2:
+
+1. an image that runs but serves nothing (the route check fails);
+2. an image that runs but never becomes healthy (its `HEALTHCHECK` fails; the check gave up after 25 s);
+3. a `docker compose up` that fails because the new container cannot start (the container runtime reports an exec error).
+
+Also seen: a first attempt was refused because the operator gave a wrong Compose project name (no container found for the service), and nothing was changed. Engine: Docker 29.9.2, Compose v5.0.0.
+
+What this does not prove: a real port conflict (case 3 is a start failure, another cause of a failing `up`), a rollback does not restore data, and a disposable service is not a real application. The 1.0 criterion (at least 3 rollbacks on a real host) is not met. Treat the rollback as tested, not as proven.
 
 ## Defects the tool had, found by using it
 
