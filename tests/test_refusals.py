@@ -1,0 +1,176 @@
+"""Everything the tool must REFUSE to do: VPN containers, and proposals that are missing, stale or unusable."""
+import contextlib
+import io
+import json
+import os
+import tempfile
+import time
+import unittest
+from unittest import mock
+
+from rpl import config, patch, proposals
+
+from .fakes import FakeHost, done, rpl_config, write_compose
+
+OLD, NEW = "registry.example.test/app:1", "registry.example.test/app:2"
+PROPOSAL = {"id": "app", "service": "app", "compose": "/srv/app/compose.yaml", "from": OLD, "to": NEW, "why": "newer version", "score": 60.0,
+            "act_rows": 1, "kev": True, "level": "internet-no-auth", "route": "app.example.test", "codes": "200 302",
+            "db": {"container": "app-db-1", "user": "app", "name": "app"}}
+
+
+def captured(fn, *a, **kw):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = fn(*a, **kw)
+    return rc, out.getvalue()
+
+
+class VpnRefusal(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.compose = write_compose(self.tmp.name, OLD)
+        self.original = open(self.compose, encoding="utf-8").read()
+        env = mock.patch.dict(os.environ, {"RPL_CONFIG": rpl_config(self.tmp.name)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def patch_argv(self, service="app"):
+        return ["--compose", self.compose, "--service", service, "--old", OLD, "--new", NEW, "--route", "app.example.test", "--codes", "200"]
+
+    def assert_refused_before_any_change(self, host, rc, out):
+        self.assertEqual(rc, 3, out)
+        self.assertIn("REFUSED", out)
+        self.assertEqual(open(self.compose, encoding="utf-8").read(), self.original)
+        self.assertEqual(host.kinds(), ["inspect-config"], "nothing but the read-only config query may have run")
+
+    def test_service_sharing_the_vpn_network_is_refused(self):
+        host = FakeHost(self.compose, vpn=True)                       # network_mode: service:gluetun
+        self.assert_refused_before_any_change(host, *captured(patch.main, self.patch_argv(), host))
+
+    def test_network_mode_container_gluetun_is_refused(self):
+        host = FakeHost(self.compose, network_mode="container:gluetun")
+        self.assert_refused_before_any_change(host, *captured(patch.main, self.patch_argv(), host))
+
+    def test_the_vpn_container_itself_is_refused(self):
+        compose = write_compose(self.tmp.name, "registry.example.test/gluetun:1", service="gluetun")
+        host = FakeHost(compose, service="gluetun")
+        rc, out = captured(patch.main, ["--compose", compose, "--service", "gluetun", "--old", "registry.example.test/gluetun:1", "--new", NEW,
+                                        "--route", "r.example.test", "--codes", "200"], host)
+        self.assertEqual((rc, "REFUSED" in out), (3, True))
+
+    def test_when_compose_cannot_be_read_the_answer_is_refuse(self):
+        host = FakeHost(self.compose, config_ok=False)
+        self.assert_refused_before_any_change(host, *captured(patch.main, self.patch_argv(), host))
+
+    def test_dry_flag_does_not_bypass_the_refusal(self):
+        host = FakeHost(self.compose, vpn=True)
+        self.assert_refused_before_any_change(host, *captured(patch.main, self.patch_argv() + ["--dry"], host))
+
+    def test_ordinary_service_is_not_refused(self):
+        host = FakeHost(self.compose)
+        rc, _ = captured(patch.main, self.patch_argv() + ["--dry"], host)
+        self.assertEqual(rc, 0)
+
+
+class VpnDetectionInProposals(unittest.TestCase):
+    """running_containers() flags the VPN container and everything whose network namespace is the VPN container's."""
+
+    def inspect(self, name, image, mode="default", cid=None, service=None):
+        return {"Id": cid or name + "-id", "Name": "/" + name,
+                "Config": {"Image": image, "Labels": {"com.docker.compose.service": service or name, "com.docker.compose.project.config_files": "/srv/c.yaml"}},
+                "HostConfig": {"NetworkMode": mode}}
+
+    def run_with(self, objs):
+        def fake(cmd, **kw):
+            return done(0, "id1 id2 id3" if cmd[:3] == ["docker", "ps", "-q"] else json.dumps(objs))
+        with mock.patch("subprocess.run", side_effect=fake):
+            return proposals.running_containers()
+
+    def test_vpn_and_its_dependents_are_flagged_and_others_are_not(self):
+        res = self.run_with([self.inspect("gluetun", "vpn/gluetun:1", cid="abc123"),
+                             self.inspect("downloader", "x/downloader:1", mode="container:abc123"),
+                             self.inspect("web", "x/web:1")])
+        self.assertEqual({k: v["vpn"] for k, v in res.items()}, {"vpn/gluetun:1": True, "x/downloader:1": True, "x/web:1": False})
+
+    def test_without_a_vpn_container_nothing_is_flagged(self):
+        res = self.run_with([self.inspect("web", "x/web:1"), self.inspect("db", "x/db:1", mode="container:other")])
+        self.assertFalse(any(v["vpn"] for v in res.values()))
+
+    def test_flagged_dependent_is_never_proposed(self):
+        res = self.run_with([self.inspect("gluetun", "vpn/gluetun:1", cid="abc"), self.inspect("dl", "x/dl:1", mode="container:abc")])
+        row = {"image": "x/dl:1", "score": 70.0, "kev": True, "level": "internet-no-auth", "decision": "ACT"}
+        props, skipped = proposals.prepare([row], {"x/dl:1": {"verdict": "COMPLETE", "candidate": "2"}}, {"dl": {"route": "r", "codes": "200"}}, res, {})
+        self.assertEqual(props, [])
+        self.assertIn("VPN", skipped[0]["reason"])
+
+
+class ApplyRefusals(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"RPL_CONFIG": rpl_config(self.tmp.name)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.path = os.path.join(config.load()["state_dir"], "proposals.json")
+        os.makedirs(os.path.dirname(self.path))
+        self.run = mock.patch("subprocess.run", return_value=done(0))
+        self.run_mock = self.run.start()
+        self.addCleanup(self.run.stop)
+
+    def store(self, props=(PROPOSAL,), age_h=0.0):
+        with open(self.path, "w") as f:
+            json.dump({"ts": time.time() - age_h * 3600, "proposals": list(props), "not_proposed": []}, f)
+
+    def apply(self, *flags, service="app"):
+        return captured(proposals.main, ["--apply", service, *flags])
+
+    def test_stored_proposal_is_applied_with_exactly_its_parameters(self):
+        self.store()
+        rc, _ = self.apply()
+        self.assertEqual(rc, 0)
+        cmd = self.run_mock.call_args[0][0]
+        self.assertEqual(cmd, proposals.build_command(PROPOSAL))
+        self.assertEqual(cmd[cmd.index("--new") + 1], NEW)
+
+    def test_unknown_proposal_is_refused_and_nothing_runs(self):
+        self.store()
+        rc, out = self.apply(service="other-app")
+        self.assertEqual(rc, 1)
+        self.assertIn("REFUSED: no proposal 'other-app'", out)
+        self.run_mock.assert_not_called()
+
+    def test_stale_proposal_is_refused(self):
+        self.store(age_h=proposals.VALIDITY_H + 1)
+        rc, out = self.apply()
+        self.assertEqual(rc, 1)
+        self.assertIn("older than", out)
+        self.run_mock.assert_not_called()
+
+    def test_proposal_just_inside_the_validity_window_is_accepted(self):
+        self.store(age_h=proposals.VALIDITY_H - 1)
+        self.assertEqual(self.apply()[0], 0)
+
+    def test_free_arguments_are_not_forwarded_to_patch(self):
+        self.store()
+        self.apply("--new", "evil/image:latest")
+        cmd = self.run_mock.call_args[0][0] if self.run_mock.called else []
+        self.assertNotIn("evil/image:latest", cmd)
+
+    def test_dry_and_no_snapshot_are_the_only_extra_flags(self):
+        self.store()
+        self.apply("--dry", "--no-snapshot")
+        cmd = self.run_mock.call_args[0][0]
+        self.assertEqual(cmd[-2:], ["--dry", "--no-snapshot"])
+
+    def test_list_shows_proposals_and_what_was_not_proposed(self):
+        with open(self.path, "w") as f:
+            json.dump({"ts": time.time(), "proposals": [PROPOSAL], "not_proposed": [{"image": "x/y:1", "reason": "no proven fix (NONE)"}]}, f)
+        rc, out = captured(proposals.main, ["--list"])
+        self.assertEqual(rc, 0)
+        self.assertIn("app", out)
+        self.assertIn("(not proposed) x/y:1: no proven fix (NONE)", out)
+
+
+if __name__ == "__main__":
+    unittest.main()
