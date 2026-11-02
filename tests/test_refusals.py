@@ -119,8 +119,15 @@ class ApplyRefusals(unittest.TestCase):
         self.addCleanup(self.run.stop)
 
     def store(self, props=(PROPOSAL,), age_h=0.0):
+        proposals.save(self.path, list(props), [], ts=time.time() - age_h * 3600)
+
+    def edit(self, fn):
+        """Change the stored file by hand, the way an editor or a stray script could."""
+        with open(self.path) as f:
+            d = json.load(f)
+        fn(d)
         with open(self.path, "w") as f:
-            json.dump({"ts": time.time() - age_h * 3600, "proposals": list(props), "not_proposed": []}, f)
+            json.dump(d, f)
 
     def apply(self, *flags, service="app"):
         return captured(proposals.main, ["--apply", service, *flags])
@@ -164,12 +171,71 @@ class ApplyRefusals(unittest.TestCase):
         self.assertEqual(cmd[-2:], ["--dry", "--no-snapshot"])
 
     def test_list_shows_proposals_and_what_was_not_proposed(self):
-        with open(self.path, "w") as f:
-            json.dump({"ts": time.time(), "proposals": [PROPOSAL], "not_proposed": [{"image": "x/y:1", "reason": "no proven fix (NONE)"}]}, f)
+        proposals.save(self.path, [PROPOSAL], [{"image": "x/y:1", "reason": "no proven fix (NONE)"}])
         rc, out = captured(proposals.main, ["--list"])
         self.assertEqual(rc, 0)
         self.assertIn("app", out)
         self.assertIn("(not proposed) x/y:1: no proven fix (NONE)", out)
+
+    # ---- Defect 4 -------------------------------------------------------------------------------------------------
+    # The docs say --apply runs "exactly the parameters of the proposal", but the stored file was trusted blindly: a proposal
+    # edited after it was computed (and reviewed with --list) was applied as is, and a missing file ended in a traceback.
+
+    def test_proposal_modified_after_it_was_computed_is_refused(self):
+        self.store()
+        self.edit(lambda d: d["proposals"][0].update({"to": "registry.example.test/app:evil"}))
+        rc, out = self.apply()
+        self.assertEqual(rc, 1)
+        self.assertIn("modified", out)
+        self.run_mock.assert_not_called()
+
+    def test_proposal_added_by_hand_is_refused(self):
+        self.store()
+        self.edit(lambda d: d["proposals"].append(dict(PROPOSAL, id="other", service="other")))
+        rc, out = self.apply(service="other")
+        self.assertEqual(rc, 1)
+        self.run_mock.assert_not_called()
+
+    def test_refreshed_timestamp_does_not_revive_a_stale_proposal(self):
+        self.store(age_h=proposals.VALIDITY_H + 5)
+        self.edit(lambda d: d.update({"ts": time.time()}))
+        rc, out = self.apply()
+        self.assertEqual(rc, 1)
+        self.run_mock.assert_not_called()
+
+    def test_file_without_a_digest_is_refused(self):
+        self.store()
+        self.edit(lambda d: d.pop("sha256"))
+        self.assertEqual(self.apply()[0], 1)
+        self.run_mock.assert_not_called()
+
+    def test_list_refuses_a_modified_file_too(self):
+        self.store()
+        self.edit(lambda d: d["proposals"][0].update({"to": "x:y"}))
+        rc, out = captured(proposals.main, ["--list"])
+        self.assertEqual(rc, 1)
+        self.assertIn("modified", out)
+
+    def test_computed_proposals_can_be_listed_and_applied_unchanged(self):
+        with mock.patch.object(proposals, "compute", return_value=([PROPOSAL], [])):
+            self.assertEqual(captured(proposals.main, [])[0], 0)
+        self.assertEqual(captured(proposals.main, ["--list"])[0], 0)
+        self.assertEqual(self.apply()[0], 0)
+
+    def test_absent_proposals_file_is_a_clear_refusal_not_a_traceback(self):
+        os.remove(self.path) if os.path.exists(self.path) else None
+        rc, out = self.apply()
+        self.assertEqual(rc, 1)
+        self.assertIn("REFUSED", out)
+        self.run_mock.assert_not_called()
+
+    def test_unreadable_proposals_file_is_a_clear_refusal(self):
+        with open(self.path, "w") as f:
+            f.write("{truncated")
+        rc, out = self.apply()
+        self.assertEqual(rc, 1)
+        self.assertIn("REFUSED", out)
+        self.run_mock.assert_not_called()
 
 
 if __name__ == "__main__":

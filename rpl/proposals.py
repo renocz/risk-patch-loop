@@ -8,6 +8,7 @@ A service is proposed only if ALL of these hold:
 Otherwise it is listed with the reason. `rpl proposals --apply <service>` runs `rpl patch` with EXACTLY the parameters of the proposal
 (never a free argument), and refuses a proposal older than 36 h.
 """
+import hashlib
 import json
 import subprocess
 import sys
@@ -106,6 +107,38 @@ def running_containers():
     return res
 
 
+def digest(d):
+    """SHA-256 of the proposals' content (timestamp included), independent of key order and whitespace."""
+    body = {k: d.get(k) for k in ("ts", "proposals", "not_proposed")}
+    return hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def save(path, props, skipped, ts=None):
+    """Write the proposals with their digest. The digest detects a file edited, truncated or mixed up after `rpl proposals` computed it
+    (what you reviewed with --list is what --apply runs). It is an integrity check, not authentication: whoever can write the
+    state directory can recompute it."""
+    d = {"ts": time.time() if ts is None else ts, "proposals": props, "not_proposed": skipped}
+    d["sha256"] = digest(d)
+    with open(path, "w") as f:
+        json.dump(d, f, ensure_ascii=False)
+
+
+def load(path):
+    """(data, None), or (None, reason to refuse)."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except OSError:
+        return None, "no proposals file: compute them first with `rpl proposals`"
+    except ValueError:
+        return None, "proposals file is unreadable: compute them again"
+    if not isinstance(d, dict) or d.get("sha256") != digest(d):
+        return None, "proposals file was modified after it was computed (or predates the digest): compute them again"
+    if (time.time() - d["ts"]) / 3600 > VALIDITY_H:
+        return None, f"proposals are older than {VALIDITY_H} h, compute them again"
+    return d, None
+
+
 def compute(cfg):
     inv = json.load(open(config.state(cfg, "inventory.json")))
     rows = [r for r in risk.evaluate(json.load(open(config.state(cfg, "findings.json"))), inv, risk.load_roles(cfg)) if r["decision"] == "ACT"]
@@ -127,9 +160,9 @@ def main(argv):
     cfg = config.load()
     path = config.state(cfg, "proposals.json")
     if "--list" in argv or "--apply" in argv:
-        d = json.load(open(path))
-        if (time.time() - d["ts"]) / 3600 > VALIDITY_H:
-            print(f"REFUSED: proposals are older than {VALIDITY_H} h, compute them again")
+        d, reason = load(path)
+        if reason:
+            print("REFUSED: " + reason)
             return 1
         if "--list" in argv:
             for p in d["proposals"]:
@@ -144,7 +177,7 @@ def main(argv):
             return 1
         return subprocess.run(build_command(p, "--dry" in argv) + (["--no-snapshot"] if "--no-snapshot" in argv else [])).returncode
     props, skipped = compute(cfg)
-    json.dump({"ts": time.time(), "proposals": props, "not_proposed": skipped}, open(path, "w"), ensure_ascii=False)
+    save(path, props, skipped)
     print(f"{len(props)} proposal(s), {len(skipped)} not proposed")
     for p in props:
         print(f" - {p['service']}: {p['from']} -> {p['to']} (score {p['score']})")
