@@ -99,6 +99,19 @@ def service_defined(compose_file, service, host=HOST):
     return cfg.returncode == 0 and service in json.loads(cfg.stdout).get("services", {})
 
 
+def container_names(compose_file, service, host=HOST):
+    """Names of the existing containers (running or not) of a service, from `compose ps -a -q` + `docker inspect`.
+    The dry run prints container names, not service names, and the name depends on the project (or on container_name:)."""
+    ids = compose(compose_file, "ps", "-a", "-q", service, host=host).stdout.split()
+    if not ids:
+        return set()
+    r = host.run(["docker", "inspect", *ids])
+    try:
+        return {c["Name"].lstrip("/") for c in json.loads(r.stdout)} if r.returncode == 0 else set()
+    except (ValueError, KeyError, TypeError):
+        return set()
+
+
 def shares_vpn_network(compose_file, service, host=HOST):
     cfg = compose(compose_file, "config", "--format", "json", host=host)
     if cfg.returncode:
@@ -213,9 +226,11 @@ def main(argv, host=HOST):
         return 1
     recreated = set(RECREATE.findall(dry.stdout + dry.stderr))
     print("dry run would recreate", sorted(recreated))
-    if len(recreated) > 1:
+    expected = container_names(a.compose, a.service, host)
+    if len(recreated) != 1 or recreated != expected:
         shutil.copy2(backup, a.compose)
-        print("FAILED: more than one container would be recreated: old file restored")
+        print(f"FAILED: the dry run must show exactly one container recreated, the one of service '{a.service}' "
+              f"({', '.join(sorted(expected)) or 'no container found for it'}); it showed {', '.join(sorted(recreated)) or 'none'}: old file restored")
         return 1
     # 5. recreate and check
     u = compose(a.compose, "up", "-d", "--no-deps", a.service, host=host)

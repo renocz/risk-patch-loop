@@ -58,7 +58,7 @@ class SuccessfulUpdate(PatchCase):
         host = self.host()
         rc, out = self.run_patch(host)
         self.assertEqual((rc, out.strip().splitlines()[-1]), (0, "OK"), out)
-        self.assertEqual(host.kinds(), ["inspect-config", "snapshot", "dump", "dump-copy", "dump-verify", "validate", "dry-run", "up", "ps", "inspect", "route"])
+        self.assertEqual(host.kinds(), ["inspect-config", "snapshot", "dump", "dump-copy", "dump-verify", "validate", "dry-run", "ps", "inspect", "up", "ps", "inspect", "route"])
 
     def test_new_image_is_pinned_and_running_and_the_old_file_is_kept(self):
         host = self.host()
@@ -149,7 +149,7 @@ class StoppedBeforeAnyChange(PatchCase):
         host = self.host(dry_recreates=["app", "app-db-1"])
         rc, out = self.run_patch(host)
         self.assertEqual(rc, 1)
-        self.assertIn("more than one container", out)
+        self.assertIn("exactly one", out)
         self.assert_untouched(host)
 
 
@@ -228,7 +228,7 @@ class DefectRegressions(PatchCase):
         host = self.host(dry_recreates=["app", "app-db-1"], dry_prefix="DRY-RUN MODE -  ")
         rc, out = self.run_patch(host)
         self.assertEqual(rc, 1, out)
-        self.assertIn("more than one container", out)
+        self.assertIn("exactly one", out)
         self.assertEqual(host.up_images, [])
 
     def test_the_planned_container_is_reported_by_name_with_a_prefix(self):
@@ -236,6 +236,76 @@ class DefectRegressions(PatchCase):
         rc, out = self.run_patch(host)
         self.assertEqual(rc, 0, out)
         self.assertIn("dry run would recreate ['app']", out)
+
+
+# Real output of `docker compose up -d --no-deps --dry-run web` (Docker 29.9.2, Compose v5.6.1), captured on a throwaway
+# container; it goes to STDERR, has no "DRY-RUN MODE" prefix, and ends with lines about a temporary container.
+REAL_DRY_RUN = (" Container rpltest-web-1 Recreate \n Container rpltest-web-1 Recreated \n"
+                " Container 0f8101710b94_rpltest-web-1 Starting \n Container 0f8101710b94_rpltest-web-1 Started \n")
+
+
+class DryRunMustShowExactlyOneRecreation(PatchCase):
+    """Council point 1: only 'more than one' was refused; zero recognised recreations (unreadable output, other Compose format,
+    nothing to recreate) passed, and the name was never compared with the service's own container."""
+
+    def assert_refused(self, host, rc, out):
+        self.assertEqual(rc, 1, out)
+        self.assertIn("exactly one", out)
+        self.assertEqual(self.compose_text(), self.original)
+        self.assertEqual(host.up_images, [])
+
+    def test_zero_recreations_is_refused(self):
+        host = self.host(dry_recreates=[])
+        self.assert_refused(host, *self.run_patch(host))
+
+    def test_unintelligible_output_is_refused(self):
+        host = self.host(dry_raw="something Compose never printed before")
+        self.assert_refused(host, *self.run_patch(host))
+
+    def test_empty_output_is_refused(self):
+        host = self.host(dry_raw="")
+        self.assert_refused(host, *self.run_patch(host))
+
+    def test_two_containers_are_refused(self):
+        host = self.host(dry_recreates=["app", "app-db-1"])
+        self.assert_refused(host, *self.run_patch(host))
+
+    def test_one_recreation_of_another_services_container_is_refused(self):
+        host = self.host(dry_recreates=["app-db-1"])
+        self.assert_refused(host, *self.run_patch(host))
+
+    def test_two_replicas_of_the_service_are_refused(self):
+        host = self.host(dry_recreates=["app", "app"], dry_raw=" Container app Recreate\n Container app-2 Recreate\n")
+        self.assert_refused(host, *self.run_patch(host))
+
+    def test_the_one_expected_container_passes_with_or_without_prefix(self):
+        for prefix in ("", "DRY-RUN MODE -  "):
+            with self.subTest(prefix=prefix):
+                host = self.host(dry_prefix=prefix)
+                rc, out = self.run_patch(host)
+                self.assertEqual(rc, 0, out)
+                self.setUp()                                   # fresh compose file for the next round
+
+    def test_container_name_that_differs_from_the_service_name_is_matched_by_lookup(self):
+        host = self.host(container="proj-app-1")
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("['proj-app-1']", out)
+
+    def test_name_that_is_only_the_service_name_is_refused_when_the_container_is_called_otherwise(self):
+        host = self.host(container="proj-app-1", dry_recreates=["app"])
+        self.assert_refused(host, *self.run_patch(host))
+
+    def test_real_compose_output_passes(self):
+        host = self.host(container="rpltest-web-1", dry_raw=REAL_DRY_RUN)
+        rc, out = self.run_patch(host)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("['rpltest-web-1']", out)
+
+    def test_no_container_exists_for_the_service_is_refused(self):
+        host = self.host(dry_recreates=["app"])
+        host.running = None                                    # `ps -a -q` finds nothing
+        self.assert_refused(host, *self.run_patch(host))
 
 
 class InputValidation(PatchCase):
