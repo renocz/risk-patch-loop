@@ -1,0 +1,13 @@
+{
+  "_help": "Copy to ./rpl.json and edit. Every key is optional (see rpl/config.py for the defaults). Relative paths are resolved from this file's directory.",
+  "state_dir": "~/.local/share/rpl",
+  "backup_dir": "~/rpl-backups",
+  "apps_file": "patch-apps.json",
+  "roles_file": "roles.json",
+  "accepted_file": "accepted.json",
+  "tunnel_hosts_file": null,
+  "snapshot_command": null,
+  "route_check_url": "https://127.0.0.1/",
+  "health_timeout_s": 180,
+  "route_timeout_s": 150
+}

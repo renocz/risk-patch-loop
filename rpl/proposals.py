@@ -8,7 +8,9 @@ A service is proposed only if ALL of these hold:
 Otherwise it is listed with the reason. `rpl proposals --apply <service>` runs `rpl patch` with EXACTLY the parameters of the proposal
 (never a free argument), and refuses a proposal older than 36 h.
 """
+import hashlib
 import json
+import math
 import subprocess
 import sys
 import time
@@ -17,6 +19,7 @@ import urllib.request
 from . import config, fixcheck, risk
 
 VALIDITY_H = 36
+CLOCK_SKEW_S = 300      # a timestamp further in the future than this is not trusted (it would defeat the expiry)
 
 
 def new_reference(current, candidate, registry_digest):
@@ -78,14 +81,11 @@ def build_command(p, dry=False):
 
 def registry_digest(ref):
     reg, repo, tag = fixcheck.split_ref(ref)
-    if reg == "ghcr.io":
-        tok = fixcheck.get_json(f"https://ghcr.io/token?scope=repository:{repo}:pull")["token"]
-        url = f"https://ghcr.io/v2/{repo}/manifests/{tag}"
-    elif reg == "docker.io":
-        tok = fixcheck.get_json(f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{repo}:pull")["token"]
-        url = f"https://registry-1.docker.io/v2/{repo}/manifests/{tag}"
-    else:
+    auth = fixcheck.registry_auth(reg, repo)
+    if auth is None:
         return None
+    tok, api = auth
+    url = f"{api}/v2/{repo}/manifests/{tag}"
     accept = ("application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, "
               "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json")
     req = urllib.request.Request(url, method="HEAD", headers={"Authorization": f"Bearer {tok}", "User-Agent": "risk-patch-loop", "Accept": accept})
@@ -109,6 +109,70 @@ def running_containers():
     return res
 
 
+def digest(d):
+    """SHA-256 of the proposals' content (timestamp included), independent of key order and whitespace."""
+    body = {k: d.get(k) for k in ("ts", "proposals", "not_proposed")}
+    return hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def save(path, props, skipped, ts=None):
+    """Write the proposals with their digest. The digest detects a file edited, truncated or mixed up after `rpl proposals` computed it
+    (what you reviewed with --list is what --apply runs). It is an integrity check, not authentication: whoever can write the
+    state directory can recompute it."""
+    d = {"ts": time.time() if ts is None else ts, "proposals": props, "not_proposed": skipped}
+    d["sha256"] = digest(d)
+    with open(path, "w") as f:
+        json.dump(d, f, ensure_ascii=False)
+
+
+def _number(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def _strings(d, keys):
+    return isinstance(d, dict) and all(isinstance(d.get(k), str) for k in keys)
+
+
+def shape_problem(d):
+    """What is wrong with the SHAPE of a proposals file (a correct digest says nothing about it), or None."""
+    if not isinstance(d, dict):
+        return "the file is not a JSON object"
+    if not _number(d.get("ts")):
+        return "'ts' is missing or not a finite number"
+    if d["ts"] > time.time() + CLOCK_SKEW_S:
+        return "'ts' is in the future"
+    if not isinstance(d.get("proposals"), list) or not isinstance(d.get("not_proposed"), list):
+        return "'proposals' and 'not_proposed' must be lists"
+    for p in d["proposals"]:
+        if not _strings(p, ("id", "service", "compose", "from", "to", "why", "route", "codes")) or not _number(p.get("score")):
+            return "a proposal has a missing or mistyped field"
+        db = p.get("db")
+        if db is not None and not _strings(db, ("container", "user", "name")):
+            return f"proposal '{p['id']}' has a malformed 'db'"
+    if not all(_strings(n, ("image", "reason")) for n in d["not_proposed"]):
+        return "an entry of 'not_proposed' is malformed"
+    return None
+
+
+def load(path):
+    """(data, None), or (None, reason to refuse)."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except OSError:
+        return None, "no proposals file: compute them first with `rpl proposals`"
+    except ValueError:
+        return None, "proposals file is unreadable: compute them again"
+    if not isinstance(d, dict) or d.get("sha256") != digest(d):
+        return None, "proposals file was modified after it was computed (or predates the digest): compute them again"
+    problem = shape_problem(d)
+    if problem:
+        return None, "proposals file is malformed (" + problem + "): compute them again"
+    if (time.time() - d["ts"]) / 3600 > VALIDITY_H:
+        return None, f"proposals are older than {VALIDITY_H} h, compute them again"
+    return d, None
+
+
 def compute(cfg):
     inv = json.load(open(config.state(cfg, "inventory.json")))
     rows = [r for r in risk.evaluate(json.load(open(config.state(cfg, "findings.json"))), inv, risk.load_roles(cfg)) if r["decision"] == "ACT"]
@@ -130,9 +194,9 @@ def main(argv):
     cfg = config.load()
     path = config.state(cfg, "proposals.json")
     if "--list" in argv or "--apply" in argv:
-        d = json.load(open(path))
-        if (time.time() - d["ts"]) / 3600 > VALIDITY_H:
-            print(f"REFUSED: proposals are older than {VALIDITY_H} h, compute them again")
+        d, reason = load(path)
+        if reason:
+            print("REFUSED: " + reason)
             return 1
         if "--list" in argv:
             for p in d["proposals"]:
@@ -140,6 +204,9 @@ def main(argv):
             for n in d["not_proposed"]:
                 print(f"(not proposed) {n['image']}: {n['reason']}")
             return 0
+        if argv.index("--apply") + 1 >= len(argv):
+            print("REFUSED: --apply needs the name of a proposal (see --list)")
+            return 1
         svc = argv[argv.index("--apply") + 1]
         p = next((x for x in d["proposals"] if x["id"] == svc), None)
         if not p:
@@ -147,7 +214,7 @@ def main(argv):
             return 1
         return subprocess.run(build_command(p, "--dry" in argv) + (["--no-snapshot"] if "--no-snapshot" in argv else [])).returncode
     props, skipped = compute(cfg)
-    json.dump({"ts": time.time(), "proposals": props, "not_proposed": skipped}, open(path, "w"), ensure_ascii=False)
+    save(path, props, skipped)
     print(f"{len(props)} proposal(s), {len(skipped)} not proposed")
     for p in props:
         print(f" - {p['service']}: {p['from']} -> {p['to']} (score {p['score']})")

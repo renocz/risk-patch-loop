@@ -11,11 +11,14 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 
 from . import config, risk
 
 VERSION = re.compile(r"^(v?)(\d+(?:\.\d+)*)$")
+NEXT_LINK = re.compile(r'<([^>]+)>\s*;\s*rel="?next"?')
+MAX_TAG_PAGES = 100
 
 
 def split_ref(ref):
@@ -63,20 +66,55 @@ def outcome(act_rows, remaining):
             "verdict": "COMPLETE" if keys and not left else ("PARTIAL" if gone else "NONE")}
 
 
+def _get(url, headers=None):
+    """(parsed JSON body, Link header or None)."""
+    with urllib.request.urlopen(urllib.request.Request(url, headers=headers or {"User-Agent": "risk-patch-loop"}), timeout=30) as r:
+        return json.load(r), r.headers.get("Link")
+
+
 def get_json(url, headers=None):
-    return json.load(urllib.request.urlopen(urllib.request.Request(url, headers=headers or {"User-Agent": "risk-patch-loop"}), timeout=30))
+    return _get(url, headers)[0]
+
+
+# Anonymous registry endpoints. Kept in one table so that tests can point them at a local fake registry.
+ENDPOINTS = {
+    "ghcr.io": {"token": "https://ghcr.io/token?scope=repository:{repo}:pull", "api": "https://ghcr.io"},
+    "docker.io": {"token": "https://auth.docker.io/token?service=registry.docker.io&scope=repository:{repo}:pull",
+                  "api": "https://registry-1.docker.io"},
+}
+
+
+def registry_auth(reg, repo):
+    """(bearer token, API base URL) for a supported registry, or None."""
+    ep = ENDPOINTS.get(reg)
+    if ep is None:
+        return None
+    return get_json(ep["token"].format(repo=repo))["token"], ep["api"]
 
 
 def list_tags(reg, repo):
-    if reg == "ghcr.io":
-        tok = get_json(f"https://ghcr.io/token?scope=repository:{repo}:pull")["token"]
-        url = f"https://ghcr.io/v2/{repo}/tags/list?n=10000"
-    elif reg == "docker.io":
-        tok = get_json(f"https://auth.docker.io/token?service=registry.docker.io&scope=repository:{repo}:pull")["token"]
-        url = f"https://registry-1.docker.io/v2/{repo}/tags/list?n=10000"
-    else:
+    """All tags of a repository, following the registry's pagination (Link: <...>; rel="next"). None if the registry is not supported.
+    Raises if the list cannot be trusted to be complete or is empty: 'no newer version' must never be said about data not read."""
+    auth = registry_auth(reg, repo)
+    if auth is None:
         return None
-    return get_json(url, {"Authorization": f"Bearer {tok}", "User-Agent": "risk-patch-loop"}).get("tags") or []
+    tok, api = auth
+    headers = {"Authorization": f"Bearer {tok}", "User-Agent": "risk-patch-loop"}
+    url, tags = f"{api}/v2/{repo}/tags/list?n=10000", []
+    for _ in range(MAX_TAG_PAGES):
+        data, link = _get(url, headers)
+        tags += data.get("tags") or []
+        m = NEXT_LINK.search(link or "")
+        if not m:
+            break
+        url = urllib.parse.urljoin(url, m.group(1))
+        if urllib.parse.urlsplit(url)[:2] != urllib.parse.urlsplit(api)[:2]:
+            raise ValueError("the tag list continues on another host: not followed (the token stays with the registry)")
+    else:
+        raise ValueError(f"tag list longer than {MAX_TAG_PAGES} pages: not read in full")
+    if not tags:
+        raise ValueError("the registry returned no tag at all for this repository")
+    return tags
 
 
 def scan_remote(cfg, ref):
@@ -107,7 +145,7 @@ def main(argv):
         try:
             tags = list_tags(reg, repo)
         except Exception as ex:
-            tags, e["registry_error"] = None, ex.__class__.__name__
+            tags, e["registry_error"], e["registry_detail"] = None, ex.__class__.__name__, str(ex)[:200]
         if tags is None:
             e["verdict"] = "UNKNOWN (registry not supported or unreachable)"
         else:
