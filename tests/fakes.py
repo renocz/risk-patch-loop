@@ -4,6 +4,7 @@ FakeRegistry   a local HTTP server that speaks enough of the registry API: token
 FakeHost       stands in for rpl.patch.Host: it interprets the docker / curl command lines `rpl patch` issues,
                keeps a tiny model of "which image runs", and records every command in order.
 """
+import hashlib
 import json
 import os
 import re
@@ -116,25 +117,69 @@ def done(rc=0, out="", err=""):
     return types.SimpleNamespace(returncode=rc, stdout=out, stderr=err)
 
 
-class FakeHost:
-    """Fake of rpl.patch.Host for ONE service in ONE compose file.
+IMAGE_LINE = re.compile(r"^\s*image:\s*(.*?)\s*(#.*)?$")
+SERVICE_KEY = re.compile(r"""^\s*["']?([A-Za-z0-9_.-]+)["']?\s*:\s*(#.*)?$""")
 
-    The model: the running container's image is whatever `image:` line the compose file has at the moment of the last
+
+def image_id(ref):
+    """The image ID a ref resolves to in the fake: same ref, same ID (what Docker's local store does for a tag)."""
+    return "sha256:" + hashlib.sha256(ref.encode()).hexdigest()[:16]
+
+
+def parse_services(path):
+    """{service: {"image": resolved image or None, "build": bool}} for a simple compose file (one level of keys under `services:`).
+    `${VAR:-default}` resolves to its default, as `docker compose config` would with VAR unset."""
+    out, in_services, child, cur = {}, False, None, None
+    for line in open(path, encoding="utf-8"):
+        text = line.strip()
+        if not text or text.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == 0:
+            in_services, child, cur = text.split("#")[0].strip() == "services:", None, None
+            continue
+        if not in_services:
+            continue
+        if child is None:
+            child = indent
+        if indent == child:
+            m = SERVICE_KEY.match(line)
+            cur = m.group(1) if m else None
+            if cur:
+                out[cur] = {"image": None, "build": False}
+        elif cur:
+            m = IMAGE_LINE.match(line)
+            if m and indent == child + 2 and line.lstrip().startswith("image:"):
+                v = m.group(1)
+                mv = re.match(r"^\$\{[A-Za-z_]+:-([^}]*)\}$", v)
+                out[cur]["image"] = mv.group(1) if mv else v
+            elif line.lstrip().startswith("build:") and indent == child + 2:
+                out[cur]["build"] = True
+    return out
+
+
+class FakeHost:
+    """Fake of rpl.patch.Host for ONE compose file; the service under test is `service`.
+
+    The model: the running container's image is whatever the compose file says for that service at the moment of the last
     successful `compose up`. `unhealthy_images` makes a container of that image start but never become healthy;
-    `route_codes` maps image -> HTTP status the route answers with; `up_fails_for` makes `compose up` exit 1 WITHOUT
-    touching the running container (what Docker does when an image cannot be pulled).
+    `route_codes` maps image -> HTTP status (or a list of statuses, consumed one per request, the last one repeating);
+    `up_fails_for` makes `compose up` exit 1 WITHOUT touching the running container (what Docker does when an image cannot
+    be pulled); `up_noop_for` makes it exit 0 WITHOUT touching the running container. `container` is the container name
+    (default: the service name; real Compose says <project>-<service>-1). `dry_raw` replaces the dry-run output.
     Unknown commands raise: a test cannot silently run something it did not plan."""
 
     def __init__(self, compose_file, service="app", running_image=None, *, unhealthy_images=(), route_codes=None,
-                 up_fails_for=(), vpn=False, network_mode="", config_ok=True, config_rejects=(), dry_recreates=None,
-                 dry_rc=0, dump_ok=True, snapshot_rc=0, dry_prefix=""):
+                 up_fails_for=(), up_noop_for=(), vpn=False, network_mode="", config_ok=True, config_rejects=(), dry_recreates=None,
+                 dry_rc=0, dump_ok=True, snapshot_rc=0, dry_prefix="", container=None, dry_raw=None):
         self.compose_file, self.service = compose_file, service
+        self.container = container or service
         self.running = running_image or self._file_image()
-        self.unhealthy_images, self.route_codes = set(unhealthy_images), route_codes or {}
-        self.up_fails_for = set(up_fails_for)
+        self.unhealthy_images, self.route_codes = set(unhealthy_images), {k: (list(v) if isinstance(v, list) else v) for k, v in (route_codes or {}).items()}
+        self.up_fails_for, self.up_noop_for = set(up_fails_for), set(up_noop_for)
         self.network_mode, self.config_ok, self.config_rejects = ("service:gluetun" if vpn else network_mode), config_ok, set(config_rejects)
         self.dry_recreates, self.dry_rc, self.dump_ok, self.snapshot_rc = dry_recreates, dry_rc, dump_ok, snapshot_rc
-        self.dry_prefix = dry_prefix
+        self.dry_prefix, self.dry_raw = dry_prefix, dry_raw
         self.calls, self.clock = [], 1_000_000.0
         self.up_images = []                      # image each `compose up` was asked for, in order
 
@@ -160,9 +205,7 @@ class FakeHost:
         return out
 
     def _file_image(self):
-        for line in open(self.compose_file, encoding="utf-8"):
-            if line.lstrip().startswith("image:"):
-                return line.split("image:", 1)[1].split("#")[0].strip()
+        return (parse_services(self.compose_file).get(self.service) or {}).get("image")
 
     def _kind(self, c):
         if c[:2] == ["sh", "-c"]:
@@ -208,24 +251,39 @@ class FakeHost:
         if k == "inspect-config":
             if not self.config_ok:
                 return done(1, "", "cannot load")
-            return done(0, json.dumps({"services": {self.service: {"image": self._file_image(), "network_mode": self.network_mode}}}))
+            services = {}
+            for name, info in parse_services(self.compose_file).items():
+                svc = {"network_mode": self.network_mode if name == self.service else ""}
+                if info["image"] is not None:
+                    svc["image"] = info["image"]
+                if info["build"]:
+                    svc["build"] = {"context": ".", "dockerfile": "Dockerfile"}
+                services[name] = svc
+            return done(0, json.dumps({"services": services}))
         if k == "dry-run":
-            names = self.dry_recreates if self.dry_recreates is not None else [self.service]
+            if self.dry_raw is not None:
+                return done(self.dry_rc, "", self.dry_raw)
+            names = self.dry_recreates if self.dry_recreates is not None else [self.container]
             return done(self.dry_rc, "", "\n".join(f" {self.dry_prefix}Container {n}  Recreate" for n in names))
         if k == "up":
             image = self._file_image()
             self.up_images.append(image)
             if image in self.up_fails_for:
                 return done(1, "", f"Error response from daemon: manifest for {image} not found")
-            self.running = image
-            return done(0, "", f" Container {self.service}  Started")
+            if image not in self.up_noop_for:
+                self.running = image
+            return done(0, "", f" Container {self.container}  Started")
         if k == "ps":
             return done(0, "cid-1\n" if self.running else "")
         if k == "inspect":
             healthy = self.running not in self.unhealthy_images
-            return done(0, json.dumps([{"State": {"Running": True, "Health": {"Status": "healthy" if healthy else "starting"}}}]))
+            return done(0, json.dumps([{"Name": "/" + self.container, "Image": image_id(self.running), "Config": {"Image": self.running},
+                                        "State": {"Running": True, "Health": {"Status": "healthy" if healthy else "starting"}}}]))
         if k == "route":
-            return done(0, str(self.route_codes.get(self.running, 200)))
+            code = self.route_codes.get(self.running, 200)
+            if isinstance(code, list):
+                code = code.pop(0) if len(code) > 1 else code[0]
+            return done(0, str(code))
         raise AssertionError(f"FakeHost: unplanned command {c}")
 
 
@@ -233,6 +291,13 @@ def write_compose(directory, image, service="app"):
     path = os.path.join(directory, "compose.yaml")
     with open(path, "w", encoding="utf-8") as f:
         f.write(f"services:\n  {service}:\n    image: {image}\n    restart: unless-stopped\n")
+    return path
+
+
+def write_compose_text(directory, text):
+    path = os.path.join(directory, "compose.yaml")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
     return path
 
 
