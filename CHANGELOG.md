@@ -31,6 +31,11 @@ Integration tests for the parts 0.9.0 left untested, the defects they exposed, a
 - `rpl patch`: `--route` and `--codes` are validated; names and image references are matched with `fullmatch` (a trailing newline was accepted).
 - `rpl proposals`: the shape of the proposals file is validated (types, finite and not-future timestamp); `--apply` without a name is a refusal.
 
+### Documentation (council review of 11/11/2026, summary of the README only)
+- The score is now described as **not validated** (14/20 against 13/20 for the trivial answer shows no added value); precision and false negatives are unmeasured.
+- Known limits added: the Docker socket is root-equivalent (protect `--apply`), data migrations and restores are not covered, VPN handling is a refusal by name and not a protection.
+- Roadmap to 1.0 made stricter: "independent" second host defined (a different owner, not just a new proxy), rollbacks must happen on a real service, at least 30 "act" verdicts, precision and confusion matrix published, a new test set.
+
 ### Documentation
 - Behaviour of real Docker 29.9.2 / Compose v5.6.1 checked by hand and written in `docs/results.md`; "Known limits" now say that images are not signature-verified.
 - `SECURITY.md`, `CONTRIBUTING.md`, issue templates (bug, proposal) and a pull request template.
