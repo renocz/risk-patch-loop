@@ -5,6 +5,7 @@
 Integration tests for the parts 0.9.0 left untested, the defects they exposed, and repository hygiene.
 
 ### Tests
+- Fingerprint test (council 11/11): the pinned reference and the SHA-256 of the proposals file are the same from computation to `--list` to `--apply`, neither step rewrites the file, and a digest changed after review is refused.
 - 144 tests added (54 -> 198), standard library only, doubles only: a fake registry on a free local port, a fake Docker host injected into `rpl patch`, mocked Trivy/Docker for `rpl scan`. `tests/__init__.py` fails any test that touches a host other than 127.0.0.1.
 - Registry reading: newer tag found, no newer tag, unreadable registry (500, 401, 404, not JSON, no token, unreachable) is UNKNOWN, never a verdict.
 - `rpl patch`: the full sequence (snapshot, dump, pin, dry run, recreate, check) and the automatic rollback (unhealthy container, bad route status, rollback that itself fails): compose file restored byte for byte, old image running, result journaled.

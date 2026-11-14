@@ -326,5 +326,56 @@ class HandMadeProposalsFile(unittest.TestCase):
         self.assertEqual(captured(proposals.main, ["--apply", "app"])[0], 0)
 
 
+class SameFingerprintFromComputationToApplication(unittest.TestCase):
+    """Council 11/11, point 3: what was computed, what the operator reviewed with --list and what --apply runs must be the same
+    thing, down to the pinned digest in `--new`, and none of the steps may alter the file."""
+
+    PINNED = "registry.example.test/app:1@sha256:" + "a" * 64
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        env = mock.patch.dict(os.environ, {"RPL_CONFIG": rpl_config(self.tmp.name)})
+        env.start()
+        self.addCleanup(env.stop)
+        self.path = os.path.join(config.load()["state_dir"], "proposals.json")
+        os.makedirs(os.path.dirname(self.path))
+        run = mock.patch("subprocess.run", return_value=done(0))
+        self.run_mock = run.start()
+        self.addCleanup(run.stop)
+        proposals.save(self.path, [dict(PROPOSAL, to=self.PINNED)], [])
+
+    def raw(self):
+        with open(self.path, "rb") as f:
+            return f.read()
+
+    def test_digest_is_stable_between_computation_and_load(self):
+        data, reason = proposals.load(self.path)
+        self.assertIsNone(reason)
+        self.assertEqual(data["sha256"], proposals.digest(data))
+        self.assertEqual(json.loads(self.raw())["sha256"], data["sha256"])
+
+    def test_list_shows_and_apply_runs_the_same_pinned_reference(self):
+        before = self.raw()
+        rc, listed = captured(proposals.main, ["--list"])
+        self.assertEqual(rc, 0)
+        self.assertIn(self.PINNED, listed)
+        self.assertEqual(captured(proposals.main, ["--apply", "app"])[0], 0)
+        cmd = self.run_mock.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--new") + 1], self.PINNED)
+        self.assertEqual(cmd[cmd.index("--old") + 1], OLD)
+        self.assertEqual(self.raw(), before, "listing and applying must not rewrite the proposals file")
+
+    def test_changing_the_pinned_digest_after_review_is_refused(self):
+        d = json.loads(self.raw())
+        d["proposals"][0]["to"] = self.PINNED.replace("a" * 64, "b" * 64)
+        with open(self.path, "w") as f:
+            json.dump(d, f)
+        rc, out = captured(proposals.main, ["--apply", "app"])
+        self.assertEqual(rc, 1)
+        self.assertIn("REFUSED", out)
+        self.run_mock.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
