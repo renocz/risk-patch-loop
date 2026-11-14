@@ -68,11 +68,12 @@ def pick(rows, n, seed, tag):
     return sorted(rows, key=lambda r: order_key(seed, tag, r["id"]))[:n]
 
 
-def draw(hosts, size, seed, allow_short=False):
+def draw(hosts, size, seed, allow_short=False, allow_single_host=False):
     """Stratified draw. The ACT rows and the PLAN + WATCH rows are as numerous as each other, and PLAN and WATCH
     share the second half as evenly as the findings allow."""
-    if len(hosts) < 2:
-        raise SystemExit("the sample must come from at least 2 hosts' scans (roadmap criterion 3)")
+    if len(hosts) < 2 and not allow_single_host:
+        raise SystemExit("the sample comes from one host only: pass --single-host to accept that and have it written in the manifest "
+                         "(the measurement then says it covers one host)")
     rows = [r for rs in hosts.values() for r in rs]
     ids = [r["id"] for r in rows]
     if len(set(ids)) != len(ids):
@@ -191,9 +192,10 @@ def cmd_draw(args):
         raise SystemExit(f"{CRITERIA} is missing: the written criteria must exist, and be committed, before the draw")
     pairs = parse_pairs(args.host, "--host")
     hosts = load_hosts(pairs)
-    res = draw(hosts, args.size, args.seed, args.allow_short)
+    res = draw(hosts, args.size, args.seed, args.allow_short, getattr(args, "single_host", False))
     os.makedirs(args.out, exist_ok=True)
     manifest = {"rpl_version": __version__, "seed": args.seed, "size": len(res["rows"]), "requested": args.size,
+                "hosts": len(hosts), "single_host": len(hosts) < 2,
                 "strata": res["strata"], "available_with_fix": res["available"],
                 "inputs": {name: sha256_file(path) for name, path in pairs},
                 "criteria_sha256": sha256_file(CRITERIA), "ids": sorted(r["id"] for r in res["rows"])}
@@ -202,7 +204,9 @@ def cmd_draw(args):
     with open(os.path.join(args.out, "manifest.json"), "w") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=1, sort_keys=True)
     write_sheet(os.path.join(args.out, "sheet.csv"), blind_rows(res["rows"], args.seed))
-    print(f"drawn {manifest['size']} findings from {len(hosts)} hosts: {res['strata']} (available with a fix: {res['available']})")
+    print(f"drawn {manifest['size']} findings from {len(hosts)} host(s): {res['strata']} (available with a fix: {res['available']})")
+    if manifest["single_host"]:
+        print("WARNING: one host only, written in manifest.json: the rate describes that host, not Docker hosts in general")
     print(f"{args.out}/sheet.csv goes to the reviewers (no score, no decision); sample.json stays with you; manifest.json can be published")
     return 0
 
@@ -255,7 +259,8 @@ def main(argv):
     p = argparse.ArgumentParser(prog="rpl sample", description="false-negative measurement (roadmap criterion 3)")
     sub = p.add_subparsers(dest="cmd", required=True)
     d = sub.add_parser("draw", help="draw the labelling sample and write the blind sheet")
-    d.add_argument("--host", action="append", required=True, metavar="NAME=risk.json", help="one per host, at least 2")
+    d.add_argument("--host", action="append", required=True, metavar="NAME=risk.json", help="one per host; at least 2, or pass --single-host")
+    d.add_argument("--single-host", action="store_true", help="accept a draw from one host, recorded in the manifest")
     d.add_argument("--seed", type=int, required=True, help="publish it")
     d.add_argument("--size", type=int, default=100)
     d.add_argument("--out", required=True)

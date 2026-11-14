@@ -49,6 +49,28 @@ class DrawTest(unittest.TestCase):
         self.assertEqual([r["id"] for r in a], [r["id"] for r in b])
         self.assertNotEqual(sorted(r["id"] for r in a), sorted(r["id"] for r in c))
 
+    def test_one_host_is_refused_unless_said_out_loud(self):
+        one = dict(list(self.hosts().items())[:1])
+        with self.assertRaises(SystemExit) as cm:
+            sample.draw(one, 50, 1)
+        self.assertIn("--single-host", str(cm.exception))
+        self.assertEqual(len(sample.draw(one, 50, 1, allow_single_host=True)["rows"]), 50)
+
+    def test_single_host_is_written_in_the_manifest(self):
+        out = os.path.join(self.tmp.name, "one")
+        args = sample.argparse.Namespace(host=self.paths[:1], seed=3, size=50, out=out, allow_short=False, single_host=True)
+        self.assertEqual(sample.cmd_draw(args), 0)
+        manifest = json.load(open(os.path.join(out, "manifest.json")))
+        self.assertTrue(manifest["single_host"])
+        self.assertEqual(manifest["hosts"], 1)
+
+    def test_two_hosts_are_not_marked_single_host(self):
+        out = os.path.join(self.tmp.name, "two")
+        args = sample.argparse.Namespace(host=self.paths, seed=3, size=50, out=out, allow_short=False)
+        sample.cmd_draw(args)
+        manifest = json.load(open(os.path.join(out, "manifest.json")))
+        self.assertFalse(manifest["single_host"])
+
     def test_act_and_plan_plus_watch_are_equally_numerous(self):
         res = sample.draw(self.hosts(), 100, 1)
         decisions = [r["decision"] for r in res["rows"]]

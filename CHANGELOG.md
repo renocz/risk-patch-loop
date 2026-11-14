@@ -7,6 +7,9 @@ Integration tests for the parts 0.9.0 left untested, the defects they exposed, a
 ### Results
 - Roadmap criterion 1 met on 14 November 2026: three automatic rollbacks (route at an unexpected status, container never healthy, `docker compose up` failing) on a real service of the author's host, failures injected on purpose, each `rollback ok` with the original image back. A first attempt at the route case did not count (test setup error, written up in `docs/results.md`). Limits: a stateless service, no database, no failure nobody provoked.
 
+### Measurement
+- `rpl sample draw --single-host`: a draw from one host is accepted only when said out loud; the manifest records `hosts` and `single_host`, a warning is printed, and the published rate must say it describes that host (owner decision of 14 November 2026). Two hosts remain the default requirement. Reviewers may be a person or a panel of models counted as one reviewer, published as "1 human + 1 model panel".
+
 ### Roadmap
 - 1.0 now requires criteria 1 (3 rollbacks on a real service) and 3 (measured false-negative rate, at most 10% of "act" missed); the independent second host (criterion 2) becomes the target for 1.1, by the owner's decision of 14 November 2026.
 
