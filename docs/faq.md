@@ -120,7 +120,7 @@ It can if you let it, and I wouldn't. Keep `--apply` behind an approval the agen
 ## Trust and limits
 
 ### What is the biggest thing missing before I'd call it 1.0?
-Three things, each with evidence in `results.md`: at least 3 automatic rollbacks on a real host; 4 weeks on a second, independent host with 20 or more containers; and a measured false-negative rate on 100 labelled findings I haven't tuned on. None of the three is done.
+Two things, each with evidence in `results.md`: at least 3 automatic rollbacks on a real host, and a measured false-negative rate on 100 labelled findings I haven't tuned on. Neither is done. A third, 4 weeks on a second, independent host with 20 or more containers, is the target for 1.1.
 
 ### Are the pulled images verified?
 No. The tool trusts the tag and the registry. There is no signature check, and for a moving tag only the digest the registry reports at that moment is pinned. A compromised registry or maintainer is outside what it can see.

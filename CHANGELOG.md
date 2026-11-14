@@ -4,6 +4,9 @@
 
 Integration tests for the parts 0.9.0 left untested, the defects they exposed, and repository hygiene.
 
+### Roadmap
+- 1.0 now requires criteria 1 (3 rollbacks on a real service) and 3 (measured false-negative rate, at most 10% of "act" missed); the independent second host (criterion 2) becomes the target for 1.1, by the owner's decision of 14 November 2026.
+
 ### Tests
 - Fingerprint test (council 11/11): the pinned reference and the SHA-256 of the proposals file are the same from computation to `--list` to `--apply`, neither step rewrites the file, and a digest changed after review is refused.
 - 144 tests added (54 -> 198), standard library only, doubles only: a fake registry on a free local port, a fake Docker host injected into `rpl patch`, mocked Trivy/Docker for `rpl scan`. `tests/__init__.py` fails any test that touches a host other than 127.0.0.1.

@@ -122,7 +122,7 @@ Il le peut si on le laisse, et je ne le ferais pas. Gardez `--apply` derrière u
 ## Confiance et limites
 
 ### Que manque-t-il avant de parler de 1.0 ?
-Trois choses, chacune avec sa preuve dans `results.md` : au moins 3 retours arrière automatiques sur un vrai hôte ; 4 semaines sur un deuxième hôte indépendant avec 20 conteneurs ou plus ; et un taux de faux négatifs mesuré sur 100 failles étiquetées sur lesquelles je n'ai pas réglé l'outil. Aucune des trois n'est faite.
+Deux choses, chacune avec sa preuve dans `results.md` : au moins 3 retours arrière automatiques sur un vrai hôte, et un taux de faux négatifs mesuré sur 100 failles étiquetées sur lesquelles je n'ai pas réglé l'outil. Aucune des deux n'est faite. Une troisième, 4 semaines sur un deuxième hôte indépendant avec 20 conteneurs ou plus, est la cible de la 1.1.
 
 ### Les images tirées sont-elles vérifiées ?
 Non. L'outil fait confiance au tag et au registre. Il n'y a pas de vérification de signature, et pour un tag mobile seul l'empreinte que le registre annonce à ce moment-là est épinglée. Un registre ou un mainteneur compromis est hors de ce qu'il peut voir.
