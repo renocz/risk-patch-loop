@@ -30,6 +30,11 @@ does not hide in either side.
 - You answer alone. You do not discuss a row with the other reviewer before both sheets are in.
 - Look the finding up as long as you need, but write the reason in `notes` when you answer `act` or `unsure`.
 - You label the whole sheet, in any order. A blank answer is refused.
+- A reviewer may be a panel of language models from at least 3 different families. Each model answers alone, in a fresh
+  session, on the same redacted sheet (exposure from the inventory, no score, no decision) and these same criteria; the
+  panel's majority answer is ONE reviewer's sheet, and its members are treated as correlated, not as several confirmations.
+  A model outside the panel is the tie-break. Log model versions and prompts, never secrets. A rate obtained with models is
+  published as "1 human + 1 model panel".
 - Two reviewers label every row. When they differ, a third reviewer, who has not seen the other two sheets, answers the
   rows they differ on (the whole sheet is fine). Disagreements are counted and published, not hidden.
 
