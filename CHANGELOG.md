@@ -11,7 +11,7 @@ Integration tests for the parts 0.9.0 left untested, the defects they exposed, a
 - `rpl sample draw --single-host`: a draw from one host is accepted only when said out loud; the manifest records `hosts` and `single_host`, a warning is printed, and the published rate must say it describes that host (owner decision of 14 November 2026). Two hosts remain the default requirement. Reviewers may be a person or a panel of models counted as one reviewer, published as "1 human + 1 model panel".
 
 ### Roadmap
-- 1.0 now requires criteria 1 (3 rollbacks on a real service) and 3 (measured false-negative rate, at most 10% of "act" missed); the independent second host (criterion 2) becomes the target for 1.1, by the owner's decision of 14 November 2026.
+- 1.0 now requires two things: rollbacks exercised on a real service (done) and a false-negative rate measured on one host with the author and a model panel as reviewers, published as it comes out (target at most 10% of "act" missed, no minimum sample size, limits written). The independent second host, a human second reviewer and another reverse proxy move to after 1.0, by the owner's decision of 14 November 2026.
 
 ### Tests
 - Fingerprint test (council 11/11): the pinned reference and the SHA-256 of the proposals file are the same from computation to `--list` to `--apply`, neither step rewrites the file, and a digest changed after review is refused.
