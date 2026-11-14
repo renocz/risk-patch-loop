@@ -32,7 +32,7 @@ It is a proof of concept. I built it and used it for a week on one host. Read th
 |---|---|
 | **Tested** | 203 automated tests against a fake Docker host, run in CI on two Python versions. A few behaviours were checked by hand on a real Docker engine. |
 | **Used** | One week on one homelab: 65 containers, one owner. Five real updates went through it and each one passed its check. |
-| **The rollback** | Never needed on a real service. I made it fire three times on purpose, on a disposable test service on the real host (2 November 2026): a new image that serves nothing, one that never becomes healthy, and a `docker compose up` that fails. The old image came back every time. Those were staged failures, not a real application failing, so it is tested, not proven. If the rollback itself can't be verified, it exits with code 4 and says to check by hand. |
+| **The rollback** | Never needed on a real service. I made it fire three times on purpose, on a disposable test service on the real host (2 November 2026), then three more times on a real stateless service (14 November 2026): a new image that serves nothing, one that never becomes healthy, and a `docker compose up` that fails. The old image came back every time. Those were staged failures, not a real application failing, so it is tested, not proven. If the rollback itself can't be verified, it exits with code 4 and says to check by hand. |
 | **Found by using it** | Three real defects in the first week, then eleven more by writing tests and reviewing the code. They are listed in [results.md](results.md), with the tests that now cover them. |
 
 I wrote the numbers down the way they came out, including the ones that don't flatter the tool.

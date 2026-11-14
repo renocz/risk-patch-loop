@@ -45,7 +45,23 @@ paperless (with a database dump), traefik (all routes cut for a few seconds), ra
 
 Also seen: a first attempt was refused because the operator gave a wrong Compose project name (no container found for the service), and nothing was changed. Engine: Docker 29.9.2, Compose v5.0.0.
 
-What this does not prove: a real port conflict (case 3 is a start failure, another cause of a failing `up`), a rollback does not restore data, and a disposable service is not a real application. The 1.0 criterion (at least 3 rollbacks on a real host) is not met. Treat the rollback as tested, not as proven.
+### Rollbacks on a real service (14 November 2026)
+
+Roadmap criterion 1 asks for three automatic rollbacks on a real service. They were run with failures injected on purpose, on a small stateless web page of the same Docker host (no database, low traffic, nothing else touched), one failure at a time with the owner's agreement, a snapshot before each and `rpl patch` as published (commit 133e5b8). The route check targeted `/` of that service, which answers 404 by design (the page sits behind a secret path), so 404 was the expected status. Three test images were derived from the service's own image:
+
+| Case | Injected failure | What `rpl patch` printed | Result |
+|---|---|---|---|
+| A | healthy container, every route except the health page answers 503 | `container healthy; route: HTTP 503 (expected 404)` then `CHECK FAILED: ROLLBACK` | `rollback ok`, exit 2, about 1 min 30 of outage |
+| B | container that never becomes healthy | `container not healthy after 90 s` then `CHECK FAILED: ROLLBACK` | `rollback ok`, exit 2, about 2 min |
+| C | `docker compose up` fails (entrypoint does not exist: runtime error `exec ... no such file or directory`) | `docker compose up failed` then `CHECK FAILED: ROLLBACK` | `rollback ok`, exit 2, about 1 min |
+
+After each case: container healthy, original image back (same image ID as before the update), route 404, health page 200, compose file identical to the original, same number of containers (70). Test images and backup files were deleted afterwards.
+
+A first attempt at case A **did not count**: the route check had been pointed at the health page, which the test image served with 200, so the update was (correctly) judged successful and the service ran the test image for about 35 seconds until it was put back by hand. The mistake was in the test setup, not in `rpl`: a route check only sees the route it is given.
+
+What these three do not prove: a service with a database (the rollback restores the image, not the data), a real port conflict (case C is a start failure), a failure nobody provoked, or behaviour under heavy traffic. The criterion is met as written, with those limits.
+
+What the 2 November tests did not prove: a real port conflict (case 3 is a start failure, another cause of a failing `up`), a rollback does not restore data, and a disposable service is not a real application. Roadmap criterion 1 (3 rollbacks on a real service) was met afterwards, see the section above. Treat the rollback as tested, not as proven.
 
 ## Defects the tool had, found by using it
 

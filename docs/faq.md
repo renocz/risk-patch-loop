@@ -73,7 +73,7 @@ For one service: it asks for a snapshot (you give the command), dumps the databa
 - a stored proposal older than 36 hours, or whose file was modified after it was computed.
 
 ### Has the rollback ever saved a real service?
-No. Every real update passed its check. I exercised the rollback three times on purpose, on 2 November 2026, on a disposable service on my real Docker host: a new image that serves nothing, one that never becomes healthy, and a `docker compose up` that fails because the new container can't start. Each time the old image came back with the same image ID, the route answered again, the compose file was restored and the journal said `rollback ok`. That is tested, not proven. I didn't test a real port conflict, a real application, or a rollback with data.
+No. Every real update passed its check. I exercised the rollback three times on purpose, on 2 November 2026, on a disposable service on my real Docker host, then three more times on 14 November 2026 on a real stateless service (a small web page, no database): a new image that serves nothing, one that never becomes healthy, and a `docker compose up` that fails because the new container can't start. Each time the old image came back with the same image ID, the route answered again, the compose file was restored and the journal said `rollback ok`. That is tested, not proven. I didn't test a real port conflict, a real application, or a rollback with data.
 
 ### Does the rollback restore my data?
 No, only the image. If the new version ran a database migration, the rollback doesn't undo it. That is what the snapshot and the dump are for.
@@ -120,7 +120,7 @@ It can if you let it, and I wouldn't. Keep `--apply` behind an approval the agen
 ## Trust and limits
 
 ### What is the biggest thing missing before I'd call it 1.0?
-Two things, each with evidence in `results.md`: at least 3 automatic rollbacks on a real host, and a measured false-negative rate on 100 labelled findings I haven't tuned on. Neither is done. A third, 4 weeks on a second, independent host with 20 or more containers, is the target for 1.1.
+Two things, each with evidence in `results.md`: at least 3 automatic rollbacks on a real host, and a measured false-negative rate on 100 labelled findings I haven't tuned on. The first was done on 14 November 2026 (see `results.md`); the second is not. A third, 4 weeks on a second, independent host with 20 or more containers, is the target for 1.1.
 
 ### Are the pulled images verified?
 No. The tool trusts the tag and the registry. There is no signature check, and for a moving tag only the digest the registry reports at that moment is pinned. A compromised registry or maintainer is outside what it can see.

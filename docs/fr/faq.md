@@ -75,7 +75,7 @@ Pour un service : il demande un instantané (vous donnez la commande), sauvegard
 - une proposition enregistrée de plus de 36 heures, ou dont le fichier a été modifié après son calcul.
 
 ### Le retour arrière a-t-il déjà sauvé un vrai service ?
-Non. Chaque vraie mise à jour a passé sa vérification. J'ai fait jouer le retour arrière trois fois exprès, le 2 novembre 2026, sur un service jetable de mon vrai hôte Docker : une nouvelle image qui ne sert rien, une qui ne devient jamais saine, et un `docker compose up` qui échoue parce que le nouveau conteneur ne démarre pas. À chaque fois l'ancienne image est revenue avec le même identifiant, la route répondait de nouveau, le fichier compose était restauré et le journal disait `rollback ok`. C'est testé, pas prouvé. Je n'ai pas testé un vrai conflit de port, une vraie application, ni un retour arrière avec des données.
+Non. Chaque vraie mise à jour a passé sa vérification. J'ai fait jouer le retour arrière trois fois exprès, le 2 novembre 2026, sur un service jetable de mon vrai hôte Docker, puis trois fois de plus le 14 novembre 2026 sur un vrai service sans données (une petite page web, sans base) : une nouvelle image qui ne sert rien, une qui ne devient jamais saine, et un `docker compose up` qui échoue parce que le nouveau conteneur ne démarre pas. À chaque fois l'ancienne image est revenue avec le même identifiant, la route répondait de nouveau, le fichier compose était restauré et le journal disait `rollback ok`. C'est testé, pas prouvé. Je n'ai pas testé un vrai conflit de port, une vraie application, ni un retour arrière avec des données.
 
 ### Le retour arrière restaure-t-il mes données ?
 Non, seulement l'image. Si la nouvelle version a lancé une migration de base de données, le retour arrière ne la défait pas. C'est à ça que servent l'instantané et la sauvegarde.
@@ -122,7 +122,7 @@ Il le peut si on le laisse, et je ne le ferais pas. Gardez `--apply` derrière u
 ## Confiance et limites
 
 ### Que manque-t-il avant de parler de 1.0 ?
-Deux choses, chacune avec sa preuve dans `results.md` : au moins 3 retours arrière automatiques sur un vrai hôte, et un taux de faux négatifs mesuré sur 100 failles étiquetées sur lesquelles je n'ai pas réglé l'outil. Aucune des deux n'est faite. Une troisième, 4 semaines sur un deuxième hôte indépendant avec 20 conteneurs ou plus, est la cible de la 1.1.
+Deux choses, chacune avec sa preuve dans `results.md` : au moins 3 retours arrière automatiques sur un vrai hôte, et un taux de faux négatifs mesuré sur 100 failles étiquetées sur lesquelles je n'ai pas réglé l'outil. La première a été faite le 14 novembre 2026 (voir `results.md`) ; la seconde ne l'est pas. Une troisième, 4 semaines sur un deuxième hôte indépendant avec 20 conteneurs ou plus, est la cible de la 1.1.
 
 ### Les images tirées sont-elles vérifiées ?
 Non. L'outil fait confiance au tag et au registre. Il n'y a pas de vérification de signature, et pour un tag mobile seul l'empreinte que le registre annonce à ce moment-là est épinglée. Un registre ou un mainteneur compromis est hors de ce qu'il peut voir.
