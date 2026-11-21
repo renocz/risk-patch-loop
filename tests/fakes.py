@@ -172,11 +172,12 @@ class FakeHost:
     def __init__(self, compose_file, service="app", running_image=None, *, unhealthy_images=(), route_codes=None,
                  up_fails_for=(), up_noop_for=(), vpn=False, network_mode="", config_ok=True, config_rejects=(), dry_recreates=None,
                  dry_rc=0, dump_ok=True, snapshot_rc=0, dry_prefix="", container=None, dry_raw=None, rebuilt_on_up=None,
-                 stopped=False, shared_image_with=(), curl_rc=None, raise_on_up=None):
+                 stopped=False, shared_image_with=(), curl_rc=None, raise_on_up=None, others_network=None):
         """stopped: the container exists but is not running until the first `compose up` (`ps -a` sees it, `ps` does not).
         shared_image_with: other services whose resolved image follows the service under test (a shared YAML anchor).
         curl_rc: image -> exit code curl returns while that image runs (the status it prints is still route_codes').
         raise_on_up: an exception raised by the first `compose up` that is not a dry run."""
+        self.others_network = others_network or {}   # other service -> its network_mode, e.g. {"dl": "service:app"}
         self.stopped, self.shared_image_with = stopped, set(shared_image_with)
         self.curl_rc, self.raise_on_up = curl_rc or {}, raise_on_up
         self.compose_file, self.service = compose_file, service
@@ -263,7 +264,7 @@ class FakeHost:
             services = {}
             parsed = parse_services(self.compose_file)
             for name, info in parsed.items():
-                svc = {"network_mode": self.network_mode if name == self.service else ""}
+                svc = {"network_mode": self.network_mode if name == self.service else self.others_network.get(name, "")}
                 if name in self.shared_image_with:
                     svc["image"] = (parsed.get(self.service) or {}).get("image")
                 elif info["image"] is not None:

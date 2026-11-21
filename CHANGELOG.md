@@ -4,6 +4,11 @@
 
 Integration tests for the parts 0.9.0 left untested, the defects they exposed, and repository hygiene.
 
+### Groups
+- `rpl/groups.py`: update groups (containers sharing a network namespace) detected from `network_mode`, with a validated `groups` config (policy `auto`/`ask`/`never`, mandatory reason for `ask` and `never`, `confirmed`); a group that is undeclared, invalid or nested is reported as blocked.
+- `rpl patch` and `rpl proposals` refuse every member of such a group whatever its name (a dependant under an ordinary name was not refused before); "gluetun" stays refused as a safety net. Exit code 3 now means "update group".
+- Not done: patching a whole group, and enforcing the policy; every member is refused regardless of policy. 23 new tests (suite: 248, run on Python 3.9.6 only, 3.12 left to CI).
+
 ### Results
 - Roadmap criterion 1 met on 14 November 2026: three automatic rollbacks (route at an unexpected status, container never healthy, `docker compose up` failing) on a real service of the author's host, failures injected on purpose, each `rollback ok` with the original image back. A first attempt at the route case did not count (test setup error, written up in `docs/results.md`). Limits: a stateless service, no database, no failure nobody provoked.
 

@@ -4,11 +4,12 @@ Sequence: snapshot -> (database dump) -> pin the new image in the compose file -
 check (container healthy, running the NEW image, AND a route through the reverse proxy answers with an expected status) -> on failure: restore the old
 compose file, recreate the service, check again, record the result.
 
-Never touches a service that shares another container's network namespace through a VPN container whose name contains "gluetun":
-those need their own procedure and an explicit decision.
+Never touches a service that shares another container's network namespace (network_mode: service:X or container:X), nor one whose
+network other services use: those form an update group (rpl/groups.py) and need their own procedure and an explicit decision.
+The name "gluetun" is still refused as a safety net.
 
 Exit codes: 0 updated; 1 refused or stopped before the service was touched; 2 the update failed its check and was rolled back (the old image
-runs again, verified); 3 refused: VPN; 4 the update failed AND the rollback could not be verified: check by hand.
+runs again, verified); 3 refused: update group; 4 the update failed AND the rollback could not be verified: check by hand.
 
 Limits, written down: the rollback puts the previous IMAGE back, not the data (a database migrated by the new version needs the dump or the
 snapshot); the route check tests one route, not the whole application.
@@ -182,12 +183,22 @@ def running_image(compose_file, service, host=HOST):
 
 
 def shares_vpn_network(compose_file, service, host=HOST):
+    """Why `service` belongs to an update group (see rpl/groups.py) or matches a refused name, else None. Cannot tell: refuse."""
     cfg = compose(compose_file, "config", "--format", "json", host=host)
     if cfg.returncode:
-        return True                       # cannot tell: refuse
-    svc = json.loads(cfg.stdout).get("services", {}).get(service, {})
+        return "cannot read the compose file: a group membership cannot be excluded"
+    services = json.loads(cfg.stdout).get("services", {})
+    svc = services.get(service, {})
     mode = svc.get("network_mode") or ""
-    return any(n in service or n in mode for n in REFUSED_NAMES)
+    if mode.startswith(("service:", "container:")):
+        return f"'{service}' shares the network of '{mode.split(':', 1)[1]}' (network_mode: {mode})"
+    names = (service, svc.get("container_name"))
+    users = sorted(n for n, s in services.items() if n != service and (s.get("network_mode") or "").split(":", 1)[-1] in names)
+    if users:
+        return f"other services use the network of '{service}': {', '.join(users)}"
+    if any(n in service or n in mode for n in REFUSED_NAMES):
+        return "name matches a refused name (kept as a safety net)"
+    return None
 
 
 def healthy(compose_file, service, timeout, host=HOST):
@@ -260,8 +271,10 @@ def main(argv, host=HOST):
     if reason:
         print("REFUSED: " + reason)
         return 1
-    if shares_vpn_network(a.compose, a.service, host):
-        print("REFUSED: VPN container or a service sharing its network: dedicated procedure and an explicit decision required")
+    why_group = shares_vpn_network(a.compose, a.service, host)
+    if why_group:
+        print("REFUSED: update group (" + why_group + "): a group is patched as a whole, which this version cannot do yet; "
+              "dedicated procedure and an explicit decision required")
         return 3
     problem = service_problem(a.compose, a.service, a.old, host)
     if problem:

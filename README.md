@@ -59,11 +59,11 @@ From [docs/results.md](docs/results.md); none of these is hidden, and none is fi
 - **The score is not validated.** It is a ranking, not a verdict. It agrees with its owner 14 times out of 20 (the trivial "always defer" answer: 13), on twenty cases, with roles chosen after seeing the verdicts: this does not show that it adds value. No false-negative rate and no precision have been measured.
 - **The Docker socket is root.** `rpl patch` drives `docker` and `docker compose`; whoever can run it can become root on that host. Run it only as an account you would trust with root, keep `--apply` behind an approval the caller cannot grant itself, and do not expose it to untrusted input.
 - **Data migrations are not covered.** An image rollback does not undo what a new version did to its database; the dump and the snapshot are the only way back, and `rpl` does not test a restore. Check you can restore before relying on it.
-- **VPN handling is a refusal, not protection.** A container named "gluetun", or sharing its network, is refused; a VPN container under another name is not recognised, and its exposure may then be under-estimated.
+- **Update groups are a refusal, not protection.** A container that shares another container's network (`network_mode: service:X` or `container:X`), and the container whose network it shares, form a group (`rpl/groups.py`). `rpl patch` and `rpl proposals` refuse every member, whatever its name; the name "gluetun" is still refused as a safety net. Patching a whole group, parent first, does not exist yet.
 - **Healthy-but-broken updates pass.** The check proves the container is healthy, runs the new image, and one route answers; it does not prove the application works.
 - **The rollback restores the image, not the data.** A database migration run by the new version is not undone; only the dump or the snapshot can do that.
 - **Pulled images are not verified.** The tool trusts the tag and the registry: no signature check (cosign or similar), and for a moving tag only the digest the registry reports at that moment is pinned. A compromised registry or maintainer is outside what it can detect.
-- **VPN containers are recognised by name** ("gluetun"), not by what they do.
+- **Group detection reads the network mode, not what the container does.** A container that reaches the same peers some other way (a published port, a sidecar without `network_mode`) is not a group. The `groups` config key (policy `auto`/`ask`/`never`, reason, `confirmed`) is read by `rpl.groups` but not yet enforced by a group apply; until that exists every member is refused regardless of policy.
 
 ## Roadmap to 1.0
 
@@ -110,7 +110,7 @@ python -m rpl proposals --apply myapp --dry      # then without --dry
 - A scan that cannot do its job (stale database, KEV list unavailable, an image not analysed) is not "OK", and findings are not rewritten.
 - `rpl patch` refuses to start without a snapshot command, unless you say `--no-snapshot`; a failed snapshot or database dump stops everything before any change.
 - The dry run must show exactly one recreation, that of the service's own container; anything else (none, two, another service, unreadable output) stops everything and restores the compose file.
-- A VPN container, or a service sharing its network, is refused.
+- A service sharing another container's network, or whose network others share (an update group, for example a VPN container and what runs behind it), is refused.
 - `rpl proposals --apply` takes the parameters from the stored proposal, nothing free-form, and refuses a proposal older than 36 hours, or whose file was modified after it was computed (SHA-256 check: integrity, not authentication).
 - `rpl patch` validates service, database and image names before running anything, and refuses a service the Compose file does not define. A failed `docker compose up` or a failed dry run counts as a failed update, not as success. The pin is bound to the requested service: the image Compose resolves for it must equal `--old`, and the edited line must lie inside its block. `--route` and `--codes` are validated.
 - After an update the container must run the new image; after a rollback it must run the original reference with the same image ID, otherwise the result is `rollback FAILED: CHECK BY HAND` (exit code 4; 2 means a verified rollback).

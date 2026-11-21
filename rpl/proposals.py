@@ -16,7 +16,7 @@ import sys
 import time
 import urllib.request
 
-from . import config, fixcheck, risk
+from . import config, fixcheck, groups, risk
 
 VALIDITY_H = 36
 CLOCK_SKEW_S = 300      # a timestamp further in the future than this is not trusted (it would defeat the expiry)
@@ -51,7 +51,7 @@ def prepare(act_rows, fixes, apps, containers, digests):
             skipped.append({"image": image, "reason": "no running container for this image"})
             continue
         if info.get("vpn"):
-            skipped.append({"image": image, "reason": "shares a VPN container's network: dedicated procedure and explicit decision"})
+            skipped.append({"image": image, "reason": "member of an update group (VPN container or service sharing a network namespace): dedicated procedure and explicit decision"})
             continue
         app = apps.get(info["service"])
         if not app:
@@ -95,7 +95,7 @@ def registry_digest(ref):
 def running_containers():
     ids = subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True).stdout.split()
     objs = json.loads(subprocess.run(["docker", "inspect", *ids], capture_output=True, text=True).stdout)
-    vpn_id = next((c["Id"] for c in objs if "gluetun" in c["Name"]), None)       # network_mode: service:vpn shows up as container:<id>
+    in_group = {n for parent, deps in groups.detect(objs).items() for n in [parent, *deps]}       # network_mode: container:<parent id>
     res = {}
     for c in objs:
         lab = c["Config"].get("Labels") or {}
@@ -105,7 +105,7 @@ def running_containers():
         mode = c["HostConfig"].get("NetworkMode") or ""
         res.setdefault(c["Config"]["Image"].split("@")[0], {
             "service": svc, "compose": files, "current_image": c["Config"]["Image"],
-            "vpn": "gluetun" in c["Name"] or (vpn_id is not None and mode == f"container:{vpn_id}") or "gluetun" in mode})
+            "vpn": c["Name"].lstrip("/") in in_group or "gluetun" in c["Name"] or "gluetun" in mode})     # the name stays a safety net
     return res
 
 

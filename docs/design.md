@@ -31,7 +31,7 @@ scan ──► inventory ──► risk score ──► fix check ──► prop
 
 **The rollback restores the image, not the data.** For a service with a PostgreSQL database, the dump (verified readable with `pg_restore -l`) and the snapshot are the safety net. Stateful migrations are the part the tool cannot undo.
 
-**VPN containers are refused.** A service whose network namespace belongs to a VPN container is recreated only by hand: recreating the VPN container breaks the services behind it. The check is a name match ("gluetun" in the container or in `network_mode`); other VPN setups need a line added to `REFUSED_NAMES` in `rpl/patch.py`.
+**Update groups are refused.** A service whose network namespace belongs to another container, and that container, are recreated only by hand: recreating the parent breaks the services behind it. `rpl/groups.py` describes these groups from `network_mode` (`service:X`, `container:X`); `rpl patch` reads the compose file, `rpl proposals` reads `docker inspect`. The name "gluetun" stays refused as a safety net in `REFUSED_NAMES` (`rpl/patch.py`). The `groups` config key (policy, reason, confirmed) is validated by `rpl.groups.status` and not yet used to allow anything.
 
 **Honest limits.** The route check proves one route answers. The score was tuned on one owner's twenty verdicts. The rollback has not been triggered in production. See `docs/results.md`.
 
