@@ -29,6 +29,8 @@ DEFAULTS = {
     "backup_dir": "~/rpl-backups",
     # update groups (see rpl/groups.py): {"<parent>": {"policy": "ask", "reason": "...", "confirmed": true, "controls": ["members_healthy"]}}
     "groups": {},
+    # notification channels (see rpl/notify.py): {"channels": [{"type": "telegram"|"webhook", ...}], "max_attempts": 20}
+    "notifications": {},
     # the two settings the closed-list controls use: a URL that answers with the caller's public address, and an image that has curl
     "probe_url": "https://api.ipify.org",
     "probe_image": "curlimages/curl:8.11.1",

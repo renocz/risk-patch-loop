@@ -14,6 +14,12 @@ Integration tests for the parts 0.9.0 left untested, the defects they exposed, a
 - `rpl group --compose F --parent P --dry`: group order (parent first), the batch a forced recreation would touch (must be exactly the group), the configured controls. Exit 0 ready, 1 refused or not ready, 2 a control failed or could not tell. Without `--dry` it refuses: applying a group does not exist.
 - Not done: backup and restore proof, controls after an update. 16 new tests (suite: 264, Python 3.9.6 only), all with a scripted host.
 
+### Notifications
+- `rpl/notify.py`: channels from the config (`telegram`, `webhook`); an event counts as delivered only when every channel answered 2xx, otherwise it stays queued and is retried up to `max_attempts` (state in `notifs.json`: tries, last error); one message per event key.
+- Secrets come from files named in the config, refused unless only the owner can read them, and never reach the state file or an error message. The webhook resolves the host once, refuses private, loopback and link-local addresses unless `allow_private`, connects to the address it checked and does not follow redirects.
+- `notify.missing_run` builds the "nightly run missing" event for a timer independent of the nightly job.
+- Not done: a CLI command that collects events from the other modules (only the library exists), per-channel delivery memory (a partial failure resends to both channels), delivery to a real Telegram or webhook (tested with doubles and a local 127.0.0.1 server only). 20 new tests (suite: 284, Python 3.9.6 only).
+
 ### Results
 - Roadmap criterion 1 met on 14 November 2026: three automatic rollbacks (route at an unexpected status, container never healthy, `docker compose up` failing) on a real service of the author's host, failures injected on purpose, each `rollback ok` with the original image back. A first attempt at the route case did not count (test setup error, written up in `docs/results.md`). Limits: a stateless service, no database, no failure nobody provoked.
 
