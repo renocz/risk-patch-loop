@@ -31,7 +31,11 @@ scan ──► inventory ──► risk score ──► fix check ──► prop
 
 **The rollback restores the image, not the data.** For a service with a PostgreSQL database, the dump (verified readable with `pg_restore -l`) and the snapshot are the safety net. Stateful migrations are the part the tool cannot undo.
 
-**VPN containers are refused.** A service whose network namespace belongs to a VPN container is recreated only by hand: recreating the VPN container breaks the services behind it. The check is a name match ("gluetun" in the container or in `network_mode`); other VPN setups need a line added to `REFUSED_NAMES` in `rpl/patch.py`.
+**Update groups are refused.** A service whose network namespace belongs to another container, and that container, are recreated only by hand: recreating the parent breaks the services behind it. `rpl/groups.py` describes these groups from `network_mode` (`service:X`, `container:X`); `rpl patch` reads the compose file, `rpl proposals` reads `docker inspect`. The name "gluetun" stays refused as a safety net in `REFUSED_NAMES` (`rpl/patch.py`). The `groups` config key (policy, reason, confirmed, controls) is validated by `rpl.groups.status` and not yet used to allow anything.
+
+**Notifications.** `rpl/notify.py` sends events to the channels of the `notifications` config. "Delivered" means every channel answered 2xx; anything else stays queued with its error and is retried up to a cap, so nothing disappears silently. Secrets live in owner-only files, never in the config or the state. The webhook checks the address it actually connects to (private, loopback, link-local refused by default) and follows no redirect. Only the library exists: no command yet gathers events from the other modules.
+
+**Group rehearsal.** `rpl group --dry` (`rpl/group.py`) never changes anything: it checks that Docker's own dry run of a forced recreation touches exactly the group's containers, then runs the controls named in the config (`rpl/controls.py`, a closed list: members healthy, exit address differs from the host's, dependants exit like the parent). "Unknown" (an address could not be read) is never counted as passing. Limits: the exit-address controls need outbound access to `probe_url` and pull `probe_image`; they prove the state now, not after an update; no backup or restore proof exists yet.
 
 **Honest limits.** The route check proves one route answers. The score was tuned on one owner's twenty verdicts. The rollback has not been triggered in production. See `docs/results.md`.
 
