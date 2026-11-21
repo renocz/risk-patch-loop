@@ -9,6 +9,11 @@ Integration tests for the parts 0.9.0 left untested, the defects they exposed, a
 - `rpl patch` and `rpl proposals` refuse every member of such a group whatever its name (a dependant under an ordinary name was not refused before); "gluetun" stays refused as a safety net. Exit code 3 now means "update group".
 - Not done: patching a whole group, and enforcing the policy; every member is refused regardless of policy. 23 new tests (suite: 248, run on Python 3.9.6 only, 3.12 left to CI).
 
+### Group controls and rehearsal
+- `rpl/controls.py`: a closed list of read-only controls (`members_healthy`, `exit_differs`, `no_leak`) chosen by name in the `groups` config; an unknown name is an error, the config never supplies a command, and addresses are compared but never printed. Only `probe_url` and `probe_image` are settings.
+- `rpl group --compose F --parent P --dry`: group order (parent first), the batch a forced recreation would touch (must be exactly the group), the configured controls. Exit 0 ready, 1 refused or not ready, 2 a control failed or could not tell. Without `--dry` it refuses: applying a group does not exist.
+- Not done: backup and restore proof, controls after an update. 16 new tests (suite: 264, Python 3.9.6 only), all with a scripted host.
+
 ### Results
 - Roadmap criterion 1 met on 14 November 2026: three automatic rollbacks (route at an unexpected status, container never healthy, `docker compose up` failing) on a real service of the author's host, failures injected on purpose, each `rollback ok` with the original image back. A first attempt at the route case did not count (test setup error, written up in `docs/results.md`). Limits: a stateless service, no database, no failure nobody provoked.
 
