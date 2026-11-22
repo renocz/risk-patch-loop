@@ -38,7 +38,7 @@ An interruption leaves the journal entry open: every later apply is refused unti
 above from the journal. Services are never left stopped without that entry.
 
 Backups hold configuration, hence secrets. They are owner-only (0700), kept `group_backup_retention_days` (7), removed by
-`rpl group --purge`.
+`rpl group --purge`, except the backup of an apply that never finished or whose rollback failed: those stay until a human deletes them.
 
 Limits, written down:
   - only fakes were used to test this: no real group was ever applied or rolled back with it;
@@ -700,19 +700,24 @@ def plan_only(a, cfg, host):
 
 
 def purge(cfg, days=None):
-    """Delete the group backups older than the retention. The backup of an unfinished apply is kept."""
+    """Delete the group backups older than the retention. Kept whatever their age: the backup of an apply that never finished, and
+    the backup of a rollback that FAILED (it is then the only copy of the original configuration, and a human has not said it is done)."""
     days = float(cfg.get("group_backup_retention_days", 7) if days is None else days)
     try:
-        keep = {(unfinished(cfg) or {}).get("backup_root")}
+        keep = {e.get("backup_root") for e in _journal(cfg) if e.get("result") is None or str(e.get("result")).startswith("rollback FAILED")}
     except (OSError, ValueError):
-        print("REFUSED: the group journal cannot be read, so the backup of an unfinished apply cannot be told apart")
+        print("REFUSED: the group journal cannot be read, so the backups that must be kept cannot be told apart")
         return 1
     removed = kept = 0
     for name in sorted(os.listdir(cfg["backup_dir"])) if os.path.isdir(cfg["backup_dir"]) else []:
         path = os.path.join(cfg["backup_dir"], name)
         if not name.startswith("group-") or os.path.islink(path) or not os.path.isdir(path):
             continue
-        if path in keep or (time.time() - os.lstat(path).st_mtime) / 86400 <= days:
+        if path in keep:
+            print(f"kept whatever its age: {path} (unfinished apply, or rollback FAILED: CHECK BY HAND; delete it yourself once the group is in order)")
+            kept += 1
+            continue
+        if (time.time() - os.lstat(path).st_mtime) / 86400 <= days:
             kept += 1
             continue
         shutil.rmtree(path)

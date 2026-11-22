@@ -26,6 +26,9 @@ Integration tests for the parts 0.9.0 left untested, the defects they exposed, a
 - Not done: `rpl group` has no apply yet, so it does not use the lock; group detection under the lock belongs to the group apply. Limits: per state directory, not an access control, a run that already started is not interrupted, tested on Linux on a local file system only (see `docs/results.md`). 39 new tests (suite: 323, run on Python 3.9.25, 3.12.3 and 3.13.18 on 22 November 2026).
 - README: the test count in "Status" said 225 while the suite had 284 since the previous change; it now says 323.
 
+### Fixed: purge and failed rollbacks
+- `rpl group --purge` deleted, once older than the retention, the backup of a group whose rollback had FAILED (`CHECK BY HAND`): the only copy of the original configuration. Only the backup of an apply with no result at all was protected. Both are now kept whatever their age and named in the output; a human deletes them. Found by reading the code, reproduced by a test that failed before the fix. 2 new tests (suite: 409, run on Python 3.9.25, 3.12.3 and 3.13.18 on 22 November 2026). Not verified on a real host.
+
 ### Trial kit
 - `docs/trial/`: the script and the step-by-step procedure used for the supervised trial of `rpl group` on a disposable test group (22 November 2026), with the interruption done by SIGTERM at two moments, as it was replayed. It narrows the scan to the trial project and supplies no result. 5 tests keep it in step with the command (suite: 407, run on Python 3.9.25, 3.12.3 and 3.13.18); they do not run Docker, so the procedure itself is only as current as its last run by hand.
 

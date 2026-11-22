@@ -620,6 +620,33 @@ class Purge(GroupCase):
         self.assertTrue(os.path.isdir(root))
 
 
+    def aged_backup_after(self, hooks=None):
+        """Run an apply that fails as set up, make its backup 30 days old, purge, and say whether the backup survived."""
+        self.host.unhealthy_images.add(NEW_SUB)
+        self.host.hooks.update(hooks or {})
+        rc, _ = self.run_group()
+        root = self.backups()[0]
+        long_ago = time.time() - 30 * 86400
+        os.utime(root, (long_ago, long_ago))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            group.main(["--purge"], self.host)
+        return rc, os.path.isdir(root), out.getvalue()
+
+    def test_the_backup_of_a_rollback_that_failed_is_kept_whatever_its_age(self):
+        # the journal says CHECK BY HAND: this backup is the only copy of the original configuration
+        rc, kept, out = self.aged_backup_after({("up", "sub"): lambda: self.host.unhealthy_images.add(f"{R}idx:1")})
+        self.assertEqual(rc, 4)
+        self.assertTrue(kept)
+        self.assertIn("1 kept", out)
+        self.assertIn("CHECK BY HAND", out)
+
+    def test_the_backup_of_a_rollback_that_succeeded_is_deleted_after_the_retention(self):
+        rc, kept, _ = self.aged_backup_after()
+        self.assertEqual(rc, 2)
+        self.assertFalse(kept)
+
+
 class TreeCopy(unittest.TestCase):
     def test_a_copy_reads_back_identical_and_a_changed_byte_or_mode_is_seen(self):
         with tempfile.TemporaryDirectory() as d:

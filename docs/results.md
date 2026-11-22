@@ -131,6 +131,8 @@ By hand, once, on real Docker (Engine 29.10.0, Compose v5.7.1, a daemon started 
 
 What this trial does not show: a real VPN group or a real application; a failure at a dependant; a failed restore; file ownership; policy `auto`. And two things it brought out: a process stopped by SIGTERM (a scheduler, `systemctl stop`) never prints `ABORTED`, so only the journal protects and nothing notifies an unfinished apply yet; and a group that is not exposed cannot be patched at all, because its score cannot reach ACT (an internal container tops out at 22 against a threshold of 45).
 
+**A defect of the purge, found afterwards by reading the code (22 November 2026).** `rpl group --purge` protected the backup of an apply that never recorded a result, not the backup of a rollback that failed: seven days after a `CHECK BY HAND`, a purge would have deleted the only copy of the original configuration. Reproduced with the model (a rollback that fails, a backup aged 30 days, a purge: the directory was gone), fixed, and both backups are now kept until a human deletes them. Never seen on a host: no rollback has failed on one.
+
 Gaps found in the earlier group code while doing this, left as they are: `rpl group --dry` looks the group up under the parent's **service** name, while `rpl patch`, `--plan` and the apply use its **container** name; `--dry` passes the containers to the controls in alphabetical order, so "the parent first" only holds when its name sorts first (the answer is the same while all members share one namespace); the control "a route answers with an expected status" is still missing from the closed list.
 
 ## A group that only Docker could see (22 November 2026)
