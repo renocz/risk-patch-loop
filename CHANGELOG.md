@@ -20,6 +20,12 @@ Integration tests for the parts 0.9.0 left untested, the defects they exposed, a
 - `notify.missing_run` builds the "nightly run missing" event for a timer independent of the nightly job.
 - Not done: a CLI command that collects events from the other modules (only the library exists), per-channel delivery memory (a partial failure resends to both channels), delivery to a real Telegram or webhook (tested with doubles and a local 127.0.0.1 server only). 20 new tests (suite: 284, Python 3.9.6 only).
 
+### Pause switch and shared lock
+- `rpl/gate.py`: `rpl pause on [--reason TEXT] | off | status` sets a file-based switch in the state directory (`PAUSED`; `touch` works too). While it is set, `rpl patch` and `rpl proposals --apply` apply nothing and exit with the new code 5 ("not now, nothing touched"); a switch that cannot be read counts as paused. Dry runs and read-only commands are not affected.
+- One shared lock (`apply.lock`, a non-blocking `flock`): `rpl patch` holds it from before its first check, the group refusal included, until the end, rollback included. A second run is refused at once with code 5 and the holder's pid; it does not wait. A killed process leaves no stale lock. Without `flock` (not a Unix system) nothing is applied.
+- Not done: `rpl group` has no apply yet, so it does not use the lock; group detection under the lock belongs to the group apply. Limits: per state directory, not an access control, a run that already started is not interrupted, tested on Linux on a local file system only (see `docs/results.md`). 39 new tests (suite: 323, run on Python 3.9.25, 3.12.3 and 3.13.18 on 22 November 2026).
+- README: the test count in "Status" said 225 while the suite had 284 since the previous change; it now says 323.
+
 ### Results
 - Roadmap criterion 1 met on 14 November 2026: three automatic rollbacks (route at an unexpected status, container never healthy, `docker compose up` failing) on a real service of the author's host, failures injected on purpose, each `rollback ok` with the original image back. A first attempt at the route case did not count (test setup error, written up in `docs/results.md`). Limits: a stateless service, no database, no failure nobody provoked.
 

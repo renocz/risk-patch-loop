@@ -99,6 +99,17 @@ Environment: Docker Engine 29.9.2 and Docker Compose v5.6.1, a Docker daemon sta
 
 **Not verified:** any other Docker or Compose version; real ghcr.io / Docker Hub pagination and tag lists; Trivy; PostgreSQL dumps; `compose up` failing in other ways than a missing image (port conflict, failing healthcheck); and the **automatic rollback on a real failure**, which was deliberately not exercised and is still unproven.
 
+## Pause switch and shared lock (22 November 2026)
+
+Run in a cloud sandbox, not on the author's host: Linux 6.18, ext file system, no Docker involved.
+
+- 39 new tests (`tests/test_gate.py`), suite of 323, all passing on Python 3.9.25, 3.12.3 and 3.13.18. Before `rpl patch` and `rpl proposals` were wired to the new module, 8 of the 39 failed (the 6 `rpl patch` ones, the paused `--apply`, the `pause` command).
+- Two of the lock tests start a real second Python process: one holds the lock while the test is refused, one is killed with SIGKILL and the lock is free straight afterwards. The others take the lock twice inside one process, which `flock` also refuses.
+- Each rule of `rpl/gate.py` was removed in turn and the tests rerun: 10 of 11 removals failed at least one test (no second switch check under the lock, no check that the lock file is still the one on disk, an unreadable switch or state directory read as "not paused", no `flock`, lock never released, reason printed raw, no first switch check, no refusal without `fcntl`, lock file mode). The eleventh (errors swallowed when removing the switch) changes nothing visible: `rpl pause off` reads the switch again and says `STILL PAUSED`.
+- By hand, once, through the command line with two processes: `rpl pause on`, `status` (exit 1), `rpl patch` refused with exit 5 before any Docker command, `pause off`; then `rpl patch` refused with exit 5 while another process held the lock, naming its pid.
+
+**Not verified:** two real updates competing on a real Docker host; a nightly job and a manual run colliding; NFS or any network file system; macOS or another Unix; Windows (no `fcntl`: the code refuses, only simulated by a test); runners under different user accounts (the lock file is created with mode 0600, so a second account is refused rather than admitted, by reading the code, not by a test). The test "a child process does not keep the lock" passes partly because Python closes inherited descriptors when it starts a process.
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.

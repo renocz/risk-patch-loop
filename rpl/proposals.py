@@ -6,7 +6,8 @@ A service is proposed only if ALL of these hold:
   - it is described in patch-apps.json (health route, accepted statuses, database to dump);
   - it is not a VPN container or a service sharing its network.
 Otherwise it is listed with the reason. `rpl proposals --apply <service>` runs `rpl patch` with EXACTLY the parameters of the proposal
-(never a free argument), and refuses a proposal older than 36 h.
+(never a free argument), and refuses a proposal older than 36 h. While the pause switch is set (rpl/gate.py), --apply starts nothing and
+exits 5; `rpl patch` holds the shared lock.
 """
 import hashlib
 import json
@@ -16,7 +17,7 @@ import sys
 import time
 import urllib.request
 
-from . import config, fixcheck, groups, risk
+from . import config, fixcheck, gate, groups, risk
 
 VALIDITY_H = 36
 CLOCK_SKEW_S = 300      # a timestamp further in the future than this is not trusted (it would defeat the expiry)
@@ -212,6 +213,11 @@ def main(argv):
         if not p:
             print(f"REFUSED: no proposal '{svc}' (see --list)")
             return 1
+        if "--dry" not in argv:
+            why = gate.paused(cfg)                        # `rpl patch` checks again and takes the shared lock itself
+            if why:
+                print("NOT NOW: " + why + ": nothing was touched")
+                return gate.EXIT_NOT_NOW
         return subprocess.run(build_command(p, "--dry" in argv) + (["--no-snapshot"] if "--no-snapshot" in argv else [])).returncode
     props, skipped = compute(cfg)
     save(path, props, skipped)

@@ -81,6 +81,9 @@ No, only the image. If the new version ran a database migration, the rollback do
 ### What does exit code 4 mean?
 `rollback FAILED: CHECK BY HAND`. The tool could not prove that the original image is running again, or the update was interrupted at a bad moment. Look at the service yourself before doing anything else. Code 2 is a verified rollback. I'd rather have a loud 4 than a quiet "ok" I can't back up.
 
+### What does exit code 5 mean?
+"Not now": the pause switch is set (`rpl pause on`), or another run holds the shared lock. Nothing was touched, and the same command may work later. A second run never waits behind the first one.
+
 ### What if the check passes but the application is broken?
 Then rpl won't notice. The check proves the container is healthy, runs the new image, and that one route answers. It doesn't prove that the application works. That is why proposals are one service at a time, with a snapshot, and why I look at the service afterwards.
 
