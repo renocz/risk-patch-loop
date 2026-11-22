@@ -17,7 +17,9 @@ service-level agreement. Only the latest release receives fixes (currently 0.9.x
 - It reads: `docker ps` / `docker inspect`, Compose files, the CISA KEV feed, and the tag lists and manifests of Docker Hub and ghcr.io (anonymous).
 - It runs Trivy as a container (`rpl scan` mounts the Docker socket into it; `rpl fixcheck` does not) and **trusts that image by tag**, not by digest.
 - It writes only when you run `rpl patch` (directly, or through `rpl proposals --apply <service>`): one `image:` line of one Compose file (with a backup),
-  then `docker compose up` for that one service, and a database dump if you configured one.
+  then `docker compose up` for that one service, and a database dump if you configured one. `rpl group` (without `--dry` or `--plan`) does the same
+  for every member of a group: it stops them, copies their configuration directories into `backup_dir` (owner-only, they contain your secrets),
+  edits the `image:` lines, recreates the members, and on failure copies the configuration back.
 - It never applies anything on its own: proposals are prepared by one command and applied by another.
 - It applies nothing while the pause switch is set (`rpl pause on`, a file in the state directory), and one run at a time (a lock file in the same directory).
   Both are a safety catch between cooperating runners, not an access control.
@@ -32,10 +34,11 @@ the state directory can recompute it; keep that directory writable only by the u
 ## In scope for a report
 
 - A way to make `rpl patch` or `rpl proposals --apply` run something other than the stored, validated proposal (argument or YAML injection, path tricks).
-- A refusal that can be bypassed: VPN containers, stale or modified proposals, a missing snapshot, the pause switch or the shared lock
+- A refusal that can be bypassed: update groups (policy, `confirmed`, the plan fingerprint, a digest that moved), VPN containers, stale or modified proposals, a missing snapshot, the pause switch or the shared lock
   (by someone who cannot write the state directory).
 - A "success" reported when the update did not happen or the scan could not do its job.
-- Secrets or private data written to logs, state files or the repository.
+- Secrets or private data written to logs, state files or the repository; a group backup readable by another user.
+- A backup or a restore that follows a symlink out of a configuration directory.
 
 ## Out of scope
 

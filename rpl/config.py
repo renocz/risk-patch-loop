@@ -34,6 +34,9 @@ DEFAULTS = {
     # the two settings the closed-list controls use: a URL that answers with the caller's public address, and an image that has curl
     "probe_url": "https://api.ipify.org",
     "probe_image": "curlimages/curl:8.11.1",
+    # group apply (rpl/groupapply.py): backups of configuration directories go to <backup_dir>/group-*, owner-only
+    "group_backup_retention_days": 7,     # `rpl group --purge` deletes older ones
+    "group_backup_max_mb": 2048,          # more than this is data, not configuration: the apply is refused
     # how many minutes to wait for a health check / route after an update
     "health_timeout_s": 180,
     "route_timeout_s": 150,

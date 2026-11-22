@@ -1,15 +1,22 @@
-"""rpl group --dry: rehearse the update of a group without changing anything.
+"""rpl group: rehearse, plan, apply or resume the update of a group (a parent container and the containers sharing its network).
 
-Shows the order (parent first), asks Docker which containers a forced recreation of the members would touch, requires that this is exactly
-the group and nothing else, and runs the configured controls BEFORE. Applying a group does not exist yet: without --dry the command refuses.
+    rpl group --compose F --parent P --dry                  quick rehearsal (below), changes nothing
+    rpl group --compose F --parent P --plan                 the full plan, its fingerprint and a backup proof, changes nothing
+    rpl group --compose F --parent P [--approve FP]         apply (rpl/groupapply.py: policy, backup, ordered update, rollback)
+    rpl group --compose F --parent P --resume               roll back an apply that was interrupted
+    rpl group --purge                                       delete group backups older than the retention
 
-Exit codes: 0 ready; 1 refused or not ready; 2 a configured control failed or could not tell.
-Limits, written down: no backup or restore proof yet; the dry run does not pull images; controls run on the current state, not after an update.
+--dry shows the order (parent first), asks Docker which containers a forced recreation of the members would touch, requires that this is
+exactly the group and nothing else, and runs the configured controls on the current state.
+
+Exit codes of --dry: 0 ready; 1 refused or not ready; 2 a configured control failed or could not tell. The others are in rpl/groupapply.py.
+Limits, written down: --dry reads the members from the compose file only and looks its group up under the parent's SERVICE name, while
+--plan and the apply use Docker too and the parent's CONTAINER name; the dry run does not pull images.
 """
 import argparse
 import json
 
-from . import config, controls, groups, patch
+from . import config, controls, groupapply, groups, patch
 
 
 def members_from_compose(compose_file, parent, host):
@@ -30,17 +37,33 @@ def members_from_compose(compose_file, parent, host):
 
 def main(argv, host=patch.HOST):
     p = argparse.ArgumentParser(prog="rpl group")
-    p.add_argument("--compose", required=True)
-    p.add_argument("--parent", required=True, help="service whose network the others share")
-    p.add_argument("--dry", action="store_true", help="required: applying a group is not implemented")
+    p.add_argument("--compose")
+    p.add_argument("--parent", help="service whose network the others share")
+    p.add_argument("--dry", action="store_true", help="quick rehearsal: order, Docker's own dry run, controls")
+    p.add_argument("--plan", action="store_true", help="the full plan with its fingerprint and a backup proof; changes nothing")
+    p.add_argument("--approve", metavar="FINGERPRINT", help="policy ask: the fingerprint of the plan a human read")
+    p.add_argument("--resume", action="store_true", help="roll back a group apply that was interrupted")
+    p.add_argument("--purge", action="store_true", help="delete group backups older than group_backup_retention_days")
+    p.add_argument("--no-snapshot", action="store_true", help="required when no snapshot_command is configured")
     a = p.parse_args(argv)
-    if not a.dry:
-        print("REFUSED: applying a group is not implemented; use --dry")
+    cfg = config.load()
+    if a.purge:
+        return groupapply.purge(cfg)
+    if not a.compose or not a.parent:
+        print("REFUSED: --compose and --parent are required")
         return 1
     if not patch.NAME.fullmatch(a.parent):
         print(f"REFUSED: --parent {a.parent!r} is not a valid name")
         return 1
-    cfg = config.load()
+    if sum((a.dry, a.plan, a.resume)) > 1:
+        print("REFUSED: --dry, --plan and --resume exclude each other")
+        return 1
+    if a.plan:
+        return groupapply.plan_only(a, cfg, host)
+    if a.resume:
+        return groupapply.resume(a, cfg, host)
+    if not a.dry:
+        return groupapply.apply(a, cfg, host)
     found, why = members_from_compose(a.compose, a.parent, host)
     if not found:
         print("REFUSED: " + why)

@@ -15,7 +15,6 @@ import math
 import subprocess
 import sys
 import time
-import urllib.request
 
 from . import config, fixcheck, gate, groups, risk
 
@@ -81,16 +80,7 @@ def build_command(p, dry=False):
 
 
 def registry_digest(ref):
-    reg, repo, tag = fixcheck.split_ref(ref)
-    auth = fixcheck.registry_auth(reg, repo)
-    if auth is None:
-        return None
-    tok, api = auth
-    url = f"{api}/v2/{repo}/manifests/{tag}"
-    accept = ("application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, "
-              "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json")
-    req = urllib.request.Request(url, method="HEAD", headers={"Authorization": f"Bearer {tok}", "User-Agent": "risk-patch-loop", "Accept": accept})
-    return urllib.request.urlopen(req, timeout=30).headers.get("Docker-Content-Digest")
+    return fixcheck.manifest_digest(ref)
 
 
 def running_containers():

@@ -81,6 +81,9 @@ No, only the image. If the new version ran a database migration, the rollback do
 ### What does exit code 4 mean?
 `rollback FAILED: CHECK BY HAND`. The tool could not prove that the original image is running again, or the update was interrupted at a bad moment. Look at the service yourself before doing anything else. Code 2 is a verified rollback. I'd rather have a loud 4 than a quiet "ok" I can't back up.
 
+### Can it update my VPN container and what runs behind it?
+Not one by one: `rpl patch` refuses every member of such a group. `rpl group` updates the group as a whole (parent first, every dependant recreated, configuration backed up, rollback), under a policy you write (`auto`, `ask`, `never`) and only when a member has a proven security fix. It is new: 65 tests against a model of Docker, runs on a sandbox Docker, and one supervised trial on my host on a disposable test group (22 November 2026). It has never run on a real VPN. Run `--plan` first and watch the first apply. And expect it to stay silent most of the time: it only acts on findings the score ranks ACT, and a container that is not exposed cannot reach that.
+
 ### What does exit code 5 mean?
 "Not now": the pause switch is set (`rpl pause on`), or another run holds the shared lock. Nothing was touched, and the same command may work later. A second run never waits behind the first one.
 
