@@ -28,6 +28,7 @@ class GroupHost:
         self.leak_images = set()                 # while the parent runs one of these, it exits with the host's own address
         self.dependant_leak_images = set()       # a dependant running one of these exits with the host's own address
         self.ids = {}                            # image ref -> image ID override
+        self.local_ids = {}                      # image ref -> what `docker image inspect` answers for it (None: not in the local store)
         self.extras = []                         # raw `docker inspect` objects of containers outside the project
         self.hooks = {}                          # (verb, service) -> callable run just before the command takes effect
         self.dry_extra = []                      # more container names the dry run claims it would recreate
@@ -57,6 +58,10 @@ class GroupHost:
             return self._address(cmd[cmd.index("--network") + 1].split(":", 1)[1])
         if cmd[:3] == ["docker", "ps", "-aq"]:
             return done(self.ps_all_rc, "\n".join([self.cid(s) for s in self.c] + [e["Id"] for e in self.extras]))
+        if cmd[:3] == ["docker", "image", "inspect"]:
+            ref = cmd[-1]
+            found = self.local_ids[ref] if ref in self.local_ids else (self.ids.get(ref) or image_id(ref))
+            return done(0, found + "\n") if found else done(1, "", "No such image")
         if cmd[:2] == ["docker", "inspect"]:
             return done(0, json.dumps([self._inspect(ref) for ref in cmd[2:]]))
         if cmd[:4] == ["docker", "compose", "-f", self.compose_file]:

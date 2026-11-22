@@ -16,7 +16,8 @@ with a proven fix the new reference PINNED BY DIGEST. Its fingerprint covers all
 recomputes the plan under the shared lock, so an approval given for another plan (a tag that moved, a member that appeared) is refused.
 
 Sequence of an apply, all under the shared lock (rpl/gate.py):
-  1. plan, from the compose file AND from Docker (every container, stopped ones included); the two views must name the same members;
+  1. plan, from the compose file AND from Docker (every container, stopped ones included); the two views must name the same members,
+     and each member must run the image its reference in the file names in the local store (same image ID; the text may differ);
   2. policy, rehearsal (Docker's own dry run must recreate exactly the group), configured controls, restorability of every configuration
      directory (bind mounts located under the compose file's directory: no symlink leaving it, no special file, size cap, ownership);
   3. snapshot command (as `rpl patch`);
@@ -95,6 +96,13 @@ def registry_digest(ref):
         return proposals.registry_digest(ref)
     except Exception:
         return None
+
+
+def local_image_id(ref, host):
+    """The image ID `ref` resolves to in Docker's local store, or None when it is not there or cannot be read."""
+    r = host.run(["docker", "image", "inspect", "-f", "{{.Id}}", ref])
+    out = (r.stdout or "").strip()
+    return out if r.returncode == 0 and out and "\n" not in out else None
 
 
 def target(current, fix):
@@ -277,9 +285,17 @@ def build_plan(a, cfg, host):
         image = (services.get(svc) or {}).get("image")
         if (services.get(svc) or {}).get("build") or not image:
             raise Refused(f"service '{svc}' is built locally or has no image: there is nothing to pin or to roll back to")
-        if running["ref"] != image:
-            raise Refused(f"service '{svc}' runs {running['ref']}, not the {image} of the compose file: recreate it first")
-        members.append({"service": svc, "container": sorted(names)[0], "from": image, "from_id": running["id"], "to": None})
+        # The image must be the one the file names, compared by image ID: the TEXT may differ (a file pinned by digest after the
+        # container was created) and the same text may name another image (a tag pulled again since). A rollback recreates the member
+        # from the file, so this is also what makes "the same image ID as before" reachable.
+        local = local_image_id(image, host)
+        if local is None:
+            raise Refused(f"service '{svc}': {image} is not in the local image store, so it cannot be compared with the image that runs")
+        if running["id"] != local:
+            raise Refused(f"service '{svc}' runs {running['ref']} ({running['id']}), which is not the image {image} names here ({local}): "
+                          "recreate it first")
+        members.append({"service": svc, "container": sorted(names)[0], "from": image, "from_id": running["id"], "to": None,
+                        "created_as": running["ref"]})
     # Docker's view must name the same members: a dependant living elsewhere would be cut off
     ps = host.run(["docker", "ps", "-aq"])
     try:
@@ -356,6 +372,8 @@ def show(plan):
     for m in plan["members"]:
         print(f"  {m['service']}: {m['from']}" + (f"  ->  {m['to']}" if m["to"] else "  (no new image: recreated only)")
               + f"  [quiesce {m['quiesce']}; backup: {', '.join(m['items']) or 'nothing'}]")
+        if m.get("created_as") and m["created_as"] != m["from"]:
+            print(f"    container created as {m['created_as']}: same image ID as the file's reference")
         for s in m["skipped"]:
             print(f"    not backed up (outside the compose directory): {s}")
     print("fingerprint: " + plan["fingerprint"])

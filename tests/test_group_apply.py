@@ -389,6 +389,54 @@ class RefusedBeforeAnythingChanges(GroupCase):
         self.assertEqual(seen, ["held"])
 
 
+class ContainerCreatedBeforeThePin(GroupCase):
+    """Found on a real host: the compose file was pinned by digest AFTER the parent container was created, so the container's reference
+    (`tunnel:1`) is not the text of the file (`tunnel:1@sha256:...`) although it is the same image. What must match is the image ID."""
+
+    def setUp(self):
+        super().setUp()
+        self.pinned = f"{R}tunnel:1@sha256:" + "9" * 64
+        with open(self.compose, "w", encoding="utf-8") as f:
+            f.write(self.original.replace(f"{R}tunnel:1", self.pinned))
+        self.original = self.read(self.compose)
+        self.host.local_ids[self.pinned] = self.host._inspect("tunnel-c1")["Image"]      # same image under both references
+
+    def test_the_same_image_under_another_reference_is_accepted(self):
+        rc, out = self.run_group("--plan")
+        self.assertEqual(rc, 0, out)
+        self.assertIn(f"container created as {R}tunnel:1", out)
+        self.assertEqual(self.run_group()[0], 0)
+        self.assertEqual(self.images()["tunnel"], NEW_TUNNEL)
+
+    def test_a_rollback_brings_back_the_reference_of_the_file_with_the_same_image_id(self):
+        self.host.ids[self.pinned] = self.host.local_ids[self.pinned]
+        self.host.fail_up_images.add(NEW_TUNNEL)
+        rc, out = self.run_group()
+        self.assertEqual(rc, 2, out)
+        self.assertEqual((self.images()["tunnel"], self.read(self.compose)), (self.pinned, self.original))
+
+    def test_another_image_under_the_reference_of_the_file_is_refused(self):
+        self.host.local_ids[self.pinned] = "sha256:another-image"
+        rc, out = self.run_group()
+        self.assertEqual(rc, 1)
+        self.assertIn("not the image", out)
+        self.assert_nothing_changed()
+
+    def test_the_same_text_is_not_enough_when_the_tag_moved_in_the_local_store(self):
+        self.host.local_ids[f"{R}idx:1"] = "sha256:pulled-since-the-container-was-created"
+        rc, out = self.run_group()
+        self.assertEqual(rc, 1)
+        self.assertIn("not the image", out)
+        self.assert_nothing_changed()
+
+    def test_a_reference_missing_from_the_local_store_cannot_be_compared_and_is_refused(self):
+        self.host.local_ids[self.pinned] = None
+        rc, out = self.run_group()
+        self.assertEqual(rc, 1)
+        self.assertIn("cannot be compared", out)
+        self.assert_nothing_changed()
+
+
 class Rollback(GroupCase):
     def migrate_on(self, service):
         """The new version rewrites its configuration when it starts, as a real application would (once: the old image does not)."""
