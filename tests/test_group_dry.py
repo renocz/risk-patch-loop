@@ -116,11 +116,12 @@ class GroupDryTest(unittest.TestCase):
         self.assertIn("tunnel-1 -> dl-1 -> idx-1", out)
         self.assertIn("READY", out)
 
-    def test_without_dry_it_refuses(self):
+    def test_dry_and_plan_exclude_each_other(self):
+        # "without --dry it refuses (not implemented)" stood here until the group apply existed: see tests/test_group_apply.py
         self.configure()
-        rc, out = self.run_dry(ScriptedHost(), extra=())
+        rc, out = self.run_dry(ScriptedHost(), extra=("--dry", "--plan"))
         self.assertEqual(rc, 1)
-        self.assertIn("not implemented", out)
+        self.assertIn("exclude each other", out)
 
     def test_dry_run_touching_another_container_is_not_ready(self):
         self.configure()

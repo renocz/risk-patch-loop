@@ -117,6 +117,27 @@ def list_tags(reg, repo):
     return tags
 
 
+def manifest_digest(ref):
+    """The digest the registry serves for a tag now (HEAD on its manifest), or None for a registry that is not supported. Raises when unreachable."""
+    reg, repo, tag = split_ref(ref)
+    auth = registry_auth(reg, repo)
+    if auth is None:
+        return None
+    tok, api = auth
+    accept = ("application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, "
+              "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json")
+    req = urllib.request.Request(f"{api}/v2/{repo}/manifests/{tag}", method="HEAD",
+                                 headers={"Authorization": f"Bearer {tok}", "User-Agent": "risk-patch-loop", "Accept": accept})
+    return urllib.request.urlopen(req, timeout=30).headers.get("Docker-Content-Digest")
+
+
+def _digest_or_none(ref):
+    try:
+        return manifest_digest(ref)
+    except Exception:
+        return None
+
+
 def scan_remote(cfg, ref):
     p = subprocess.run(["docker", "run", "--rm", "-v", f"{cfg['trivy_cache']}:/root/.cache/trivy", cfg["trivy_image"], "image", "--quiet",
                         "--scanners", "vuln", "--severity", "HIGH,CRITICAL", "--image-src", "remote", "--format", "json", ref],
@@ -156,8 +177,12 @@ def main(argv):
             elif dry:
                 e["verdict"] = "(dry: not scanned)"
             else:
-                remaining = scan_remote(cfg, f"{reg}/{repo}:{cand}" if reg != "docker.io" else f"{repo}:{cand}")
+                full = f"{reg}/{repo}:{cand}" if reg != "docker.io" else f"{repo}:{cand}"
+                before = _digest_or_none(full)
+                remaining = scan_remote(cfg, full)
                 e.update({"verdict": "SCAN FAILED"} if remaining is None else outcome(by_image[ref], remaining))
+                # the digest the proof is about: the same before and after the scan, or unknown (never a guess)
+                e["candidate_digest"] = before if before and before == _digest_or_none(full) else None
         out["images"].append(e)
         print(json.dumps(e, ensure_ascii=False))
     if not dry:

@@ -100,6 +100,29 @@ class FixcheckVerdicts(RegistryCase):
         scan.assert_not_called()
         self.assertFalse(os.path.exists(os.path.join(self.state, "fixcheck.json")))
 
+    def test_the_digest_of_the_scanned_candidate_is_recorded_with_the_proof(self):
+        with FakeRegistry(tags={"example-org/app": ["1.0.0", "1.1.0"]}, digests={("example-org/app", "1.1.0"): "sha256:abc"}):
+            _, entries, _ = self.fixcheck(f"{IMAGE}:1.0.0")
+        self.assertEqual((entries[0]["verdict"], entries[0]["candidate_digest"]), ("COMPLETE", "sha256:abc"))
+
+    def test_a_digest_that_cannot_be_read_is_recorded_as_unknown(self):
+        with FakeRegistry(tags={"example-org/app": ["1.0.0", "1.1.0"]}):
+            _, entries, _ = self.fixcheck(f"{IMAGE}:1.0.0")
+        self.assertIsNone(entries[0]["candidate_digest"])
+
+    def test_a_tag_that_moves_during_the_scan_has_no_proven_digest(self):
+        with FakeRegistry(tags={"example-org/app": ["1.0.0", "1.1.0"]}, digests={("example-org/app", "1.1.0"): "sha256:abc"}) as reg:
+            write_state(self.state, f"{IMAGE}:1.0.0")
+
+            def scan_while_the_tag_moves(cfg, ref):
+                reg.digests[("example-org/app", "1.1.0")] = "sha256:def"
+                return set()
+
+            with mock.patch("rpl.fixcheck.scan_remote", side_effect=scan_while_the_tag_moves), contextlib.redirect_stdout(io.StringIO()):
+                fixcheck.main([])
+        with open(os.path.join(self.state, "fixcheck.json")) as f:
+            self.assertIsNone(json.load(f)["images"][0]["candidate_digest"])
+
     def test_moving_tag_is_read_again(self):
         with FakeRegistry(tags={"example-org/app": ["latest", "1.0.0"]}):
             _, entries, scan = self.fixcheck(f"{IMAGE}:latest")

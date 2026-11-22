@@ -29,7 +29,7 @@ scan ──► inventory ──► risk score ──► fix check ──► prop
 
 - **Exposure-aware score.** Severity, "exploited in the wild" (CISA KEV), access to the Docker socket, and the role of the service, all scaled by how reachable the container is: on the Internet without a login, behind a login, on a LAN port, localhost only, internal.
 - **A fix is proven before it is proposed.** The candidate version is scanned *from the registry* (nothing is pulled). If the maintainer has not published a rebuilt image, the answer is "no fix", not a version bump that changes nothing.
-- **One service at a time.** Snapshot, database dump, pinned image, dry run, recreate, health and route check, and an automatic rollback if the check fails. A VPN container and the services behind it are refused.
+- **One service at a time.** Snapshot, database dump, pinned image, dry run, recreate, health and route check, and an automatic rollback if the check fails. A VPN container and the services behind it are never patched one by one: they form a group, patched as a whole by `rpl group` (new, tested on fakes and once on a sandbox Docker, never on a real VPN).
 - **Nothing happens without a human.** The tool prepares proposals; applying one is a separate, explicit command.
 
 ## Start here: pick your path
@@ -45,7 +45,7 @@ scan ──► inventory ──► risk score ──► fix check ──► prop
 
 Built and used for one week on one Docker host (65 containers, Traefik, one owner). **Read [docs/results.md](docs/results.md) before trusting it**: the score is **not validated**. It agrees with its owner's verdicts 14 times out of 20, but a trivial "always defer" answer gets 13, so this shows no added value yet; the roles were also tuned after seeing those verdicts. The automatic rollback has never fired on a real service. It handles Docker Compose + Traefik, Docker Hub and ghcr.io.
 
-Tested: 334 automated tests against a fake Docker host (sequencing and refusals), run in CI on Python 3.9 and 3.12; a few behaviours were also checked by hand on real Docker (see the limits below).
+Tested: 397 automated tests against a fake Docker host (sequencing and refusals), run in CI on Python 3.9 and 3.12; a few behaviours were also checked by hand on real Docker (see the limits below).
 
 ## Known limits
 
@@ -59,12 +59,12 @@ From [docs/results.md](docs/results.md); none of these is hidden, and none is fi
 - **The score is not validated.** It is a ranking, not a verdict. It agrees with its owner 14 times out of 20 (the trivial "always defer" answer: 13), on twenty cases, with roles chosen after seeing the verdicts: this does not show that it adds value. No false-negative rate and no precision have been measured.
 - **The Docker socket is root.** `rpl patch` drives `docker` and `docker compose`; whoever can run it can become root on that host. Run it only as an account you would trust with root, keep `--apply` behind an approval the caller cannot grant itself, and do not expose it to untrusted input.
 - **Data migrations are not covered.** An image rollback does not undo what a new version did to its database; the dump and the snapshot are the only way back, and `rpl` does not test a restore. Check you can restore before relying on it.
-- **Update groups are a refusal, not protection.** A container that shares another container's network (`network_mode: service:X` or `container:X`), and the container whose network it shares, form a group (`rpl/groups.py`). `rpl patch` and `rpl proposals` refuse every member, whatever its name; the name "gluetun" is still refused as a safety net. Patching a whole group, parent first, does not exist yet. `rpl patch` looks for the group in its compose file and in Docker itself (every container of the host, stopped ones included), so a dependant of another compose project or of a plain `docker run` counts; if Docker cannot be listed or inspected, every patch is refused. What remains: the answer is true when it is read. The shared lock keeps other `rpl` runs out, not a `docker run` typed by hand during the update; and `rpl proposals --apply` relies on the check `rpl patch` makes at that moment, not on the one made when the proposal was computed.
+- **Update groups: one by one they are refused; as a whole, `rpl group` is new and unproven.** A container that shares another container's network (`network_mode: service:X` or `container:X`), and the container whose network it shares, form a group (`rpl/groups.py`). `rpl patch` and `rpl proposals` refuse every member, whatever its name (the name "gluetun" is still refused as a safety net); they look in the compose file and in Docker itself (every container, stopped ones included), and refuse when Docker cannot answer. `rpl group` patches the whole group, parent first, every dependant recreated after it, with a backup of the configuration directories and a rollback. **It has never run on a real VPN group or on the author's host**: 60 tests against a model of Docker, plus one success and one provoked failure on a sandbox Docker with `busybox` containers (22 November 2026, `docs/results.md`). Treat it as untested on your host until you have run `--plan` and a first apply while watching.
 - **The pause switch and the shared lock are a safety catch, not an access control.** `rpl pause on` stops every later `rpl patch` and `rpl proposals --apply` (exit code 5), and one lock file keeps two runs from applying at once. Both live in the state directory: two runners with different `state_dir` values do not see each other, and whoever can write that directory can remove them. A run that already started is not interrupted by the switch. A second run does not wait, it is refused. The lock is a `flock`: Unix only (without it nothing is applied), tested on Linux on a local file system, not on NFS or macOS, and never with two real updates competing on a real Docker host. Read-only commands and `--dry` ignore both.
 - **Healthy-but-broken updates pass.** The check proves the container is healthy, runs the new image, and one route answers; it does not prove the application works.
 - **The rollback restores the image, not the data.** A database migration run by the new version is not undone; only the dump or the snapshot can do that.
 - **Pulled images are not verified.** The tool trusts the tag and the registry: no signature check (cosign or similar), and for a moving tag only the digest the registry reports at that moment is pinned. A compromised registry or maintainer is outside what it can detect.
-- **Group detection reads the network mode, not what the container does.** A container that reaches the same peers some other way (a published port, a sidecar without `network_mode`) is not a group. The `groups` config key (policy `auto`/`ask`/`never`, reason, `confirmed`) is read by `rpl.groups` but not yet enforced by a group apply; until that exists every member is refused regardless of policy.
+- **What `rpl group` does not cover.** Group detection reads the network mode, not what the container does: a container that reaches the same peers some other way (a published port, a sidecar without `network_mode`) is not a group. A group must live in ONE compose file: if Docker knows a dependant the file does not name, the apply is refused. Only bind mounts located under the compose file's directory are backed up and restored; named volumes, bind mounts elsewhere and databases in other containers are not. The copy is taken with the members stopped (`quiesce: stop`, the default for a member that mounts a configuration directory), which is the only consistency guarantee: no SQLite or LevelDB tool is run. A member whose restore fails is left stopped, loudly (exit code 4). An application that changes data outside its configuration directory is not rolled back. Backups contain secrets: they are owner-only (mode 0700), kept 7 days by default, deleted by `rpl group --purge`, and nothing deletes them for you. The fix proof is bound to a digest only for the group apply: `rpl patch` and `rpl proposals` still pin a versioned tag without one.
 
 ## Roadmap to 1.0
 
@@ -98,6 +98,27 @@ python -m rpl proposals --apply myapp --dry      # then without --dry
 
 `python -m rpl pause on --reason "..."` stops anything from being applied until `python -m rpl pause off` (`pause status` exits 1 while paused); `touch <state_dir>/PAUSED` does the same without Python.
 
+A group (for example a VPN container and the services behind it) is declared in `rpl.json` under the parent's **container** name, then planned and applied:
+
+```json
+"groups": {"proj-vpn-1": {"policy": "ask", "reason": "VPN: recreating it cuts every service behind it", "confirmed": true,
+                          "controls": ["members_healthy", "exit_differs", "no_leak"],
+                          "services": {"indexer": {"quiesce": "none"}}}}
+```
+
+```bash
+python -m rpl group --compose /srv/proj/compose.yaml --parent vpn --plan       # changes nothing; prints the plan and its fingerprint
+python -m rpl group --compose /srv/proj/compose.yaml --parent vpn --approve <fingerprint>
+python -m rpl group --compose /srv/proj/compose.yaml --parent vpn --resume     # after an interruption: roll back
+python -m rpl group --purge                                                    # delete group backups older than 7 days
+```
+
+| Policy | Who starts the apply | What it needs |
+|---|---|---|
+| `auto` | the nightly run, no human | `confirmed: true` |
+| `ask` (default to choose) | a human, at the command line | `confirmed: true`, a reason, and `--approve <fingerprint>` |
+| `never` | nobody | a reason; always refused |
+
 ## Files you write by hand (see `examples/`)
 
 | File | Purpose |
@@ -113,7 +134,9 @@ python -m rpl proposals --apply myapp --dry      # then without --dry
 - A scan that cannot do its job (stale database, KEV list unavailable, an image not analysed) is not "OK", and findings are not rewritten.
 - `rpl patch` refuses to start without a snapshot command, unless you say `--no-snapshot`; a failed snapshot or database dump stops everything before any change.
 - The dry run must show exactly one recreation, that of the service's own container; anything else (none, two, another service, unreadable output) stops everything and restores the compose file.
-- A service sharing another container's network, or whose network others share (an update group, for example a VPN container and what runs behind it), is refused. `rpl patch` asks both the compose file and Docker (all containers, stopped ones included, under the shared lock); when Docker cannot answer, it refuses.
+- A service sharing another container's network, or whose network others share (an update group, for example a VPN container and what runs behind it), is refused by `rpl patch`, which asks both the compose file and Docker (all containers, stopped ones included, under the shared lock); when Docker cannot answer, it refuses.
+- `rpl group` applies a group only when a member has a proven security fix pending, and only under its policy: `auto` (the nightly run, no human), `ask` (the default: a human gives `--approve <fingerprint of the plan>`), `never`. `auto` and `ask` also need `"confirmed": true`; `ask` and `never` need a reason. The most restrictive of the group's and its services' policies wins. The fingerprint covers every member, the image it runs and the new reference pinned by digest; the digest must be the one the fix check scanned and the one the registry serves now, otherwise the answer is UNKNOWN and nothing is applied. The plan is computed again under the lock, so an approval given before a tag moved is refused.
+- A group that could not be restored (a symlink leaving a configuration directory, a special file, files of another owner, more than `group_backup_max_mb`) is refused before anything changes. A journal entry is written before anything is stopped; after an interruption every group apply is refused until `rpl group ... --resume` has rolled back.
 - Before it runs a single command, `rpl patch` checks the pause switch, takes the shared lock, and checks the switch again under the lock; it keeps the lock until the end, rollback included. Paused, or another run holding the lock: exit code 5, nothing touched. A switch that cannot be read counts as paused; a lock that cannot be taken means nothing is applied (`rpl/gate.py`).
 - `rpl proposals --apply` takes the parameters from the stored proposal, nothing free-form, and refuses a proposal older than 36 hours, or whose file was modified after it was computed (SHA-256 check: integrity, not authentication).
 - `rpl patch` validates service, database and image names before running anything, and refuses a service the Compose file does not define. A failed `docker compose up` or a failed dry run counts as a failed update, not as success. The pin is bound to the requested service: the image Compose resolves for it must equal `--old`, and the edited line must lie inside its block. `--route` and `--codes` are validated.
