@@ -99,6 +99,17 @@ Environment: Docker Engine 29.9.2 and Docker Compose v5.6.1, a Docker daemon sta
 
 **Not verified:** any other Docker or Compose version; real ghcr.io / Docker Hub pagination and tag lists; Trivy; PostgreSQL dumps; `compose up` failing in other ways than a missing image (port conflict, failing healthcheck); and the **automatic rollback on a real failure**, which was deliberately not exercised and is still unproven.
 
+## A group that only Docker could see (22 November 2026)
+
+Found by reading the code while verifying the group work, then reproduced. `rpl patch` decided group membership from its own compose file only; `groups.refusal` was called by nothing. A dependant declared in another compose project, or started with `docker run --network container:<parent>`, did not make `rpl patch` refuse the parent: it could have been recreated alone, cutting every dependant off its network namespace. `rpl proposals` listed running containers only, so a parent whose dependants were all stopped was not flagged.
+
+Fix: `rpl patch` also inspects every container of the host (stopped ones included) and refuses with exit code 3 when the service's container is a parent or a dependant; when Docker cannot be listed, inspected or parsed, it refuses. `rpl proposals` detects groups over every container.
+
+- 11 new tests (suite: 334, passing on Python 3.9.25, 3.12.3 and 3.13.18). Before the fix, 8 of the 9 `rpl patch` tests and 1 of the 2 `rpl proposals` tests failed; the two that passed are controls (an unrelated group elsewhere does not stop a patch; a stopped container is not listed as running). Three existing tests assert the exact command sequence and were updated for the two new read-only queries.
+- Checked by hand, once, on real Docker (Engine 29.10.0, Compose v5.7.1, a daemon started in the cloud sandbox, `busybox:1.36` containers running `sleep`, removed afterwards), with `rpl patch --dry` on a parent service. On the parent commit (97c9e32): exit 0 while a `docker run --network container:<parent>` dependant existed. With the fix: exit 3 with a dependant from another compose project, exit 3 with that dependant stopped, exit 3 with a `docker run` dependant, exit 0 once the dependant was removed, exit 0 for an unrelated service of the same file. In all cases Docker reported the dependant's `HostConfig.NetworkMode` as `container:<full ID of the parent>`, including when the compose file named the parent.
+
+**Not verified:** a real (non-dry) patch on that host; a host with many containers (one `docker inspect` receives every ID); another Docker version; Podman. A container removed between the listing and the inspection makes the inspection fail, which refuses the patch (read in the code and Docker's behaviour assumed, not provoked). A dependant attached by hand after the check and before the recreation is not seen: the lock only excludes other `rpl` runs.
+
 ## Pause switch and shared lock (22 November 2026)
 
 Run in a cloud sandbox, not on the author's host: Linux 6.18, ext file system, no Docker involved.

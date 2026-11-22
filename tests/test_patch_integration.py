@@ -58,7 +58,7 @@ class SuccessfulUpdate(PatchCase):
         host = self.host()
         rc, out = self.run_patch(host)
         self.assertEqual((rc, out.strip().splitlines()[-1]), (0, "OK"), out)
-        self.assertEqual(host.kinds(), ["inspect-config", "ps", "inspect", "snapshot", "dump", "dump-copy", "dump-verify", "inspect-config", "validate", "inspect-config",
+        self.assertEqual(host.kinds(), ["inspect-config", "ps-all", "inspect", "ps", "inspect", "ps", "inspect", "snapshot", "dump", "dump-copy", "dump-verify", "inspect-config", "validate", "inspect-config",
                                         "dry-run", "ps", "inspect", "up", "ps", "inspect", "ps", "inspect", "route"])
 
     def test_new_image_is_pinned_and_running_and_the_old_file_is_kept(self):
@@ -95,7 +95,7 @@ class SuccessfulUpdate(PatchCase):
         host = self.host()
         rc, out = self.run_patch(host, "--dry")
         self.assertEqual(rc, 0)
-        self.assertEqual(host.kinds(), ["inspect-config"])
+        self.assertEqual(host.kinds(), ["inspect-config", "ps-all", "inspect", "ps", "inspect"])      # the group check: compose file, then Docker
         self.assertEqual(self.compose_text(), self.original)
 
     def test_no_snapshot_command_is_refused_unless_said_out_loud(self):
@@ -188,7 +188,7 @@ class AutomaticRollback(PatchCase):
     def test_snapshot_and_dump_happen_before_the_failed_update(self):
         host = self.host(unhealthy_images={NEW})
         self.run_patch(host)
-        self.assertEqual(host.kinds()[:9], ["inspect-config", "ps", "inspect", "snapshot", "dump", "dump-copy", "dump-verify", "inspect-config", "validate"])
+        self.assertEqual(host.kinds()[:13], ["inspect-config", "ps-all", "inspect", "ps", "inspect", "ps", "inspect", "snapshot", "dump", "dump-copy", "dump-verify", "inspect-config", "validate"])
 
     def test_rollback_that_itself_fails_is_flagged_for_a_human(self):
         host = self.host(unhealthy_images={NEW, OLD})

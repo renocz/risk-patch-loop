@@ -6,6 +6,8 @@ compose file, recreate the service, check again, record the result.
 
 Never touches a service that shares another container's network namespace (network_mode: service:X or container:X), nor one whose
 network other services use: those form an update group (rpl/groups.py) and need their own procedure and an explicit decision.
+The group is looked for twice: in the compose file (services not created yet), and in Docker itself (every container of the host,
+stopped ones included: a dependant of another compose project or of a plain `docker run` is only visible there).
 The name "gluetun" is still refused as a safety net.
 
 Exit codes: 0 updated; 1 refused or stopped before the service was touched; 2 the update failed its check and was rolled back (the old image
@@ -25,7 +27,7 @@ import subprocess
 import sys
 import time
 
-from . import config, gate
+from . import config, gate, groups
 
 REFUSED_NAMES = ("gluetun",)
 # All checked with fullmatch: '$' would accept a trailing newline.
@@ -202,6 +204,33 @@ def shares_vpn_network(compose_file, service, host=HOST):
     return None
 
 
+def docker_group_refusal(compose_file, service, cfg_groups, host=HOST):
+    """Why Docker itself says `service` belongs to an update group, or None.
+
+    The compose file only shows the groups written in it. A dependant of another compose project, or one started with
+    `docker run --network container:<parent>`, exists only in Docker: every container of the host, stopped ones included, is inspected
+    and passed to groups.detect. Cannot list, cannot inspect, cannot parse: refuse."""
+    cannot = "an update group cannot be excluded: Docker's containers cannot be listed or inspected"
+    ps = host.run(["docker", "ps", "-aq"])
+    if ps.returncode:
+        return cannot
+    ids = ps.stdout.split()
+    if not ids:
+        return None
+    r = host.run(["docker", "inspect", *ids])
+    try:
+        detected = groups.detect(json.loads(r.stdout)) if r.returncode == 0 else None
+    except (ValueError, KeyError, TypeError, AttributeError):
+        detected = None
+    if detected is None:
+        return cannot
+    for name in sorted(container_names(compose_file, service, host)):
+        why = groups.refusal(name, detected, cfg_groups)
+        if why:
+            return why
+    return None
+
+
 def healthy(compose_file, service, timeout, host=HOST):
     end = host.now() + timeout
     while host.now() < end:
@@ -296,6 +325,10 @@ def _run(a, cfg, codes, host):
     if problem:
         print("REFUSED: " + problem)
         return 1
+    why_group = docker_group_refusal(a.compose, a.service, cfg.get("groups"), host)      # what the compose file alone cannot show
+    if why_group:
+        print("REFUSED: " + why_group)
+        return 3
     ok, msg, _ = pin(a.compose, a.old, a.new, host=host, service=a.service)
     print(msg)
     if not ok:
