@@ -172,11 +172,18 @@ class FakeHost:
     def __init__(self, compose_file, service="app", running_image=None, *, unhealthy_images=(), route_codes=None,
                  up_fails_for=(), up_noop_for=(), vpn=False, network_mode="", config_ok=True, config_rejects=(), dry_recreates=None,
                  dry_rc=0, dump_ok=True, snapshot_rc=0, dry_prefix="", container=None, dry_raw=None, rebuilt_on_up=None,
-                 stopped=False, shared_image_with=(), curl_rc=None, raise_on_up=None, others_network=None):
+                 stopped=False, shared_image_with=(), curl_rc=None, raise_on_up=None, others_network=None,
+                 others=(), docker_mode="default", ps_all_rc=0, inspect_all=None):
         """stopped: the container exists but is not running until the first `compose up` (`ps -a` sees it, `ps` does not).
         shared_image_with: other services whose resolved image follows the service under test (a shared YAML anchor).
         curl_rc: image -> exit code curl returns while that image runs (the status it prints is still route_codes').
         raise_on_up: an exception raised by the first `compose up` that is not a dry run."""
+        # The host-wide view (`docker ps -aq` + `docker inspect`), beyond this compose file:
+        # others: containers of other projects, [{"name": "dl-1", "mode": "container:cid-1", "id": ..., "running": True}];
+        # docker_mode: HostConfig.NetworkMode of the service's own container (its ID is "cid-1");
+        # ps_all_rc: exit code of `docker ps -aq`; inspect_all: (exit code, stdout) of the host-wide inspect that follows it.
+        self.others = {o.get("id") or o["name"] + "-id": o for o in others}
+        self.docker_mode, self.ps_all_rc, self.inspect_all, self._host_wide = docker_mode, ps_all_rc, inspect_all, False
         self.others_network = others_network or {}   # other service -> its network_mode, e.g. {"dl": "service:app"}
         self.stopped, self.shared_image_with = stopped, set(shared_image_with)
         self.curl_rc, self.raise_on_up = curl_rc or {}, raise_on_up
@@ -238,6 +245,8 @@ class FakeHost:
                 return "ps"
         if c[:2] == ["docker", "inspect"]:
             return "inspect"
+        if c[:3] == ["docker", "ps", "-aq"]:
+            return "ps-all"
         if c[0] == "curl":
             return "route"
         return None
@@ -295,10 +304,22 @@ class FakeHost:
         if k == "ps":
             exists = self.running and (self.stopped is False or "-a" in c)
             return done(0, "cid-1\n" if exists else "")
+        if k == "ps-all":
+            self._host_wide = True
+            return done(self.ps_all_rc, "\n".join((["cid-1"] if self.running else []) + list(self.others)))
         if k == "inspect":
+            host_wide, self._host_wide = self._host_wide, False
+            if host_wide and self.inspect_all is not None:
+                return done(*self.inspect_all)
             healthy = self.running not in self.unhealthy_images
-            return done(0, json.dumps([{"Name": "/" + self.container, "Image": self.ids.get(self.running) or image_id(self.running), "Config": {"Image": self.running},
-                                        "State": {"Running": True, "Health": {"Status": "healthy" if healthy else "starting"}}}]))
+            own = {"Id": "cid-1", "Name": "/" + self.container, "Image": self.ids.get(self.running) or image_id(self.running),
+                   "Config": {"Image": self.running}, "HostConfig": {"NetworkMode": self.docker_mode},
+                   "State": {"Running": True, "Health": {"Status": "healthy" if healthy else "starting"}}}
+            objs = [own if i not in self.others else
+                    {"Id": i, "Name": "/" + self.others[i]["name"], "Image": image_id(self.others[i]["name"]), "Config": {"Image": "registry.example.test/other:1"},
+                     "HostConfig": {"NetworkMode": self.others[i].get("mode", "default")}, "State": {"Running": self.others[i].get("running", True)}}
+                    for i in c[2:]]
+            return done(0, json.dumps(objs))
         if k == "route":
             code = self.route_codes.get(self.running, 200)
             if isinstance(code, list):

@@ -69,7 +69,7 @@ For one service: it asks for a snapshot (you give the command), dumps the databa
 - a service the compose file doesn't define, or one that has `build:` instead of `image:`;
 - a service with no running container, because then there is no proof of what the "old" image was;
 - a dry run that shows anything other than one recreation of that service;
-- a service that shares another container's network, or whose network others share (an update group; the name "gluetun" is also refused);
+- a service that shares another container's network, or whose network others share (an update group; the name "gluetun" is also refused), whether the compose file or Docker says so, and also when Docker cannot be asked;
 - a stored proposal older than 36 hours, or whose file was modified after it was computed.
 
 ### Has the rollback ever saved a real service?

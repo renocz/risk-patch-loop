@@ -147,15 +147,36 @@ class PatchRefusesAnyGroupMember(unittest.TestCase):
 class ProposalsFlagAnyGroupMember(unittest.TestCase):
     def test_dependant_under_an_ordinary_name_is_flagged(self):
         objs = [{"Id": "p1", "Name": "/tunnel-1", "Config": {"Image": "x/tunnel:1", "Labels": {"com.docker.compose.service": "tunnel-1",
-                "com.docker.compose.project.config_files": "/srv/c.yaml"}}, "HostConfig": {"NetworkMode": "default"}},
+                "com.docker.compose.project.config_files": "/srv/c.yaml"}}, "HostConfig": {"NetworkMode": "default"}, "State": {"Running": True}},
                 {"Id": "d1", "Name": "/dl-1", "Config": {"Image": "x/dl:1", "Labels": {"com.docker.compose.service": "dl-1",
-                "com.docker.compose.project.config_files": "/srv/c.yaml"}}, "HostConfig": {"NetworkMode": "container:p1"}}]
+                "com.docker.compose.project.config_files": "/srv/c.yaml"}}, "HostConfig": {"NetworkMode": "container:p1"}, "State": {"Running": True}}]
 
         def fake(cmd, **kw):
-            return done(0, "a b" if cmd[:3] == ["docker", "ps", "-q"] else json.dumps(objs))
+            return done(0, "a b" if cmd[:3] == ["docker", "ps", "-aq"] else json.dumps(objs))
         with mock.patch("subprocess.run", side_effect=fake):
             res = proposals.running_containers()
         self.assertEqual({k: v["vpn"] for k, v in res.items()}, {"x/tunnel:1": True, "x/dl:1": True})
+
+    def run_with(self, objs):
+        """`docker ps -aq` lists everything; a `docker ps -q` (running only) would never show a stopped container."""
+        def fake(cmd, **kw):
+            if cmd[:2] == ["docker", "ps"]:
+                return done(0, " ".join(o["Id"] for o in objs if "a" in cmd[2] or o["State"]["Running"]))
+            return done(0, json.dumps([o for o in objs if o["Id"] in cmd[2:]]))
+        with mock.patch("subprocess.run", side_effect=fake):
+            return proposals.running_containers()
+
+    def container(self, name, mode="default", running=True):
+        return {"Id": name + "-id", "Name": "/" + name, "State": {"Running": running}, "HostConfig": {"NetworkMode": mode},
+                "Config": {"Image": "x/" + name + ":1", "Labels": {"com.docker.compose.service": name, "com.docker.compose.project.config_files": "/srv/c.yaml"}}}
+
+    def test_a_parent_whose_only_dependant_is_stopped_is_still_flagged(self):
+        res = self.run_with([self.container("tunnel-1"), self.container("dl-1", "container:tunnel-1-id", running=False)])
+        self.assertTrue(res["x/tunnel-1:1"]["vpn"])
+
+    def test_a_stopped_container_is_not_listed_as_running(self):
+        res = self.run_with([self.container("web-1"), self.container("old-1", running=False)])
+        self.assertEqual(list(res), ["x/web-1:1"])
 
 
 if __name__ == "__main__":

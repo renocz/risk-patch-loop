@@ -94,11 +94,15 @@ def registry_digest(ref):
 
 
 def running_containers():
-    ids = subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True).stdout.split()
+    """{image: {service, compose, current_image, vpn}} for the RUNNING containers. Groups are detected over every container, stopped
+    ones included: a parent whose dependants are all stopped is still a parent."""
+    ids = subprocess.run(["docker", "ps", "-aq"], capture_output=True, text=True).stdout.split()
     objs = json.loads(subprocess.run(["docker", "inspect", *ids], capture_output=True, text=True).stdout)
     in_group = {n for parent, deps in groups.detect(objs).items() for n in [parent, *deps]}       # network_mode: container:<parent id>
     res = {}
     for c in objs:
+        if not (c.get("State") or {}).get("Running"):
+            continue
         lab = c["Config"].get("Labels") or {}
         svc, files = lab.get("com.docker.compose.service"), (lab.get("com.docker.compose.project.config_files") or "").split(",")[0]
         if not svc or not files:

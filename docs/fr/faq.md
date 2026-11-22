@@ -71,7 +71,7 @@ Pour un service : il demande un instantané (vous donnez la commande), sauvegard
 - un service que le fichier compose ne définit pas, ou qui a `build:` à la place de `image:` ;
 - un service sans conteneur actif, car on n'aurait aucune preuve de ce qu'était l'ancienne image ;
 - un essai à blanc qui montre autre chose qu'une recréation de ce service ;
-- un conteneur VPN (reconnu au nom « gluetun »), ou un service qui partage son réseau ;
+- un service qui partage le réseau d'un autre conteneur, ou dont le réseau est partagé (un groupe de mise à jour ; le nom « gluetun » est aussi refusé), que ce soit le fichier compose ou Docker qui le dise, et aussi quand Docker ne peut pas être interrogé ;
 - une proposition enregistrée de plus de 36 heures, ou dont le fichier a été modifié après son calcul.
 
 ### Le retour arrière a-t-il déjà sauvé un vrai service ?

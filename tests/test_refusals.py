@@ -79,11 +79,11 @@ class VpnDetectionInProposals(unittest.TestCase):
     def inspect(self, name, image, mode="default", cid=None, service=None):
         return {"Id": cid or name + "-id", "Name": "/" + name,
                 "Config": {"Image": image, "Labels": {"com.docker.compose.service": service or name, "com.docker.compose.project.config_files": "/srv/c.yaml"}},
-                "HostConfig": {"NetworkMode": mode}}
+                "HostConfig": {"NetworkMode": mode}, "State": {"Running": True}}
 
     def run_with(self, objs):
         def fake(cmd, **kw):
-            return done(0, "id1 id2 id3" if cmd[:3] == ["docker", "ps", "-q"] else json.dumps(objs))
+            return done(0, "id1 id2 id3" if cmd[:3] == ["docker", "ps", "-aq"] else json.dumps(objs))
         with mock.patch("subprocess.run", side_effect=fake):
             return proposals.running_containers()
 

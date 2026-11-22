@@ -26,6 +26,11 @@ Integration tests for the parts 0.9.0 left untested, the defects they exposed, a
 - Not done: `rpl group` has no apply yet, so it does not use the lock; group detection under the lock belongs to the group apply. Limits: per state directory, not an access control, a run that already started is not interrupted, tested on Linux on a local file system only (see `docs/results.md`). 39 new tests (suite: 323, run on Python 3.9.25, 3.12.3 and 3.13.18 on 22 November 2026).
 - README: the test count in "Status" said 225 while the suite had 284 since the previous change; it now says 323.
 
+### Groups seen only by Docker
+- Fixed: `rpl patch` decided group membership from its own compose file only, so a dependant of another compose project, or one started with `docker run --network container:<parent>`, did not stop the parent from being patched alone. It now also inspects every container of the host, stopped ones included, under the shared lock, and refuses (exit code 3, with the configured policy and reason); when Docker cannot be listed, inspected or parsed, it refuses. Reproduced on real Docker 29.10.0 before and after the fix (`docs/results.md`).
+- Fixed: `rpl proposals` detected groups among running containers only; a parent whose dependants were all stopped was not flagged. Groups are now detected over every container; only running ones are proposed.
+- Unchanged: every member of a group is refused whatever its policy, and `confirmed` is not enforced. 11 new tests (suite: 334, run on Python 3.9.25, 3.12.3 and 3.13.18 on 22 November 2026); 9 of them failed before the fix.
+
 ### Results
 - Roadmap criterion 1 met on 14 November 2026: three automatic rollbacks (route at an unexpected status, container never healthy, `docker compose up` failing) on a real service of the author's host, failures injected on purpose, each `rollback ok` with the original image back. A first attempt at the route case did not count (test setup error, written up in `docs/results.md`). Limits: a stateless service, no database, no failure nobody provoked.
 
