@@ -45,7 +45,7 @@ scan ──► inventory ──► risk score ──► fix check ──► prop
 
 Built and used for one week on one Docker host (65 containers, Traefik, one owner). **Read [docs/results.md](docs/results.md) before trusting it**: the score is **not validated**. It agrees with its owner's verdicts 14 times out of 20, but a trivial "always defer" answer gets 13, so this shows no added value yet; the roles were also tuned after seeing those verdicts. The automatic rollback has never fired on a real service. It handles Docker Compose + Traefik, Docker Hub and ghcr.io.
 
-Tested: 225 automated tests against a fake Docker host (sequencing and refusals), run in CI on Python 3.9 and 3.12; a few behaviours were also checked by hand on real Docker (see the limits below).
+Tested: 323 automated tests against a fake Docker host (sequencing and refusals), run in CI on Python 3.9 and 3.12; a few behaviours were also checked by hand on real Docker (see the limits below).
 
 ## Known limits
 
@@ -60,6 +60,7 @@ From [docs/results.md](docs/results.md); none of these is hidden, and none is fi
 - **The Docker socket is root.** `rpl patch` drives `docker` and `docker compose`; whoever can run it can become root on that host. Run it only as an account you would trust with root, keep `--apply` behind an approval the caller cannot grant itself, and do not expose it to untrusted input.
 - **Data migrations are not covered.** An image rollback does not undo what a new version did to its database; the dump and the snapshot are the only way back, and `rpl` does not test a restore. Check you can restore before relying on it.
 - **Update groups are a refusal, not protection.** A container that shares another container's network (`network_mode: service:X` or `container:X`), and the container whose network it shares, form a group (`rpl/groups.py`). `rpl patch` and `rpl proposals` refuse every member, whatever its name; the name "gluetun" is still refused as a safety net. Patching a whole group, parent first, does not exist yet.
+- **The pause switch and the shared lock are a safety catch, not an access control.** `rpl pause on` stops every later `rpl patch` and `rpl proposals --apply` (exit code 5), and one lock file keeps two runs from applying at once. Both live in the state directory: two runners with different `state_dir` values do not see each other, and whoever can write that directory can remove them. A run that already started is not interrupted by the switch. A second run does not wait, it is refused. The lock is a `flock`: Unix only (without it nothing is applied), tested on Linux on a local file system, not on NFS or macOS, and never with two real updates competing on a real Docker host. Read-only commands and `--dry` ignore both.
 - **Healthy-but-broken updates pass.** The check proves the container is healthy, runs the new image, and one route answers; it does not prove the application works.
 - **The rollback restores the image, not the data.** A database migration run by the new version is not undone; only the dump or the snapshot can do that.
 - **Pulled images are not verified.** The tool trusts the tag and the registry: no signature check (cosign or similar), and for a moving tag only the digest the registry reports at that moment is pinned. A compromised registry or maintainer is outside what it can detect.
@@ -95,6 +96,8 @@ python -m rpl proposals --apply myapp --dry      # then without --dry
 
 `rpl patch` is the last step on its own (`rpl patch --help`). Run the first five steps nightly (cron or a systemd timer).
 
+`python -m rpl pause on --reason "..."` stops anything from being applied until `python -m rpl pause off` (`pause status` exits 1 while paused); `touch <state_dir>/PAUSED` does the same without Python.
+
 ## Files you write by hand (see `examples/`)
 
 | File | Purpose |
@@ -111,6 +114,7 @@ python -m rpl proposals --apply myapp --dry      # then without --dry
 - `rpl patch` refuses to start without a snapshot command, unless you say `--no-snapshot`; a failed snapshot or database dump stops everything before any change.
 - The dry run must show exactly one recreation, that of the service's own container; anything else (none, two, another service, unreadable output) stops everything and restores the compose file.
 - A service sharing another container's network, or whose network others share (an update group, for example a VPN container and what runs behind it), is refused.
+- Before it runs a single command, `rpl patch` checks the pause switch, takes the shared lock, and checks the switch again under the lock; it keeps the lock until the end, rollback included. Paused, or another run holding the lock: exit code 5, nothing touched. A switch that cannot be read counts as paused; a lock that cannot be taken means nothing is applied (`rpl/gate.py`).
 - `rpl proposals --apply` takes the parameters from the stored proposal, nothing free-form, and refuses a proposal older than 36 hours, or whose file was modified after it was computed (SHA-256 check: integrity, not authentication).
 - `rpl patch` validates service, database and image names before running anything, and refuses a service the Compose file does not define. A failed `docker compose up` or a failed dry run counts as a failed update, not as success. The pin is bound to the requested service: the image Compose resolves for it must equal `--old`, and the edited line must lie inside its block. `--route` and `--codes` are validated.
 - After an update the container must run the new image; after a rollback it must run the original reference with the same image ID, otherwise the result is `rollback FAILED: CHECK BY HAND` (exit code 4; 2 means a verified rollback).

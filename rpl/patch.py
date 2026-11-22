@@ -9,7 +9,8 @@ network other services use: those form an update group (rpl/groups.py) and need 
 The name "gluetun" is still refused as a safety net.
 
 Exit codes: 0 updated; 1 refused or stopped before the service was touched; 2 the update failed its check and was rolled back (the old image
-runs again, verified); 3 refused: update group; 4 the update failed AND the rollback could not be verified: check by hand.
+runs again, verified); 3 refused: update group; 4 the update failed AND the rollback could not be verified: check by hand; 5 not now: the
+pause switch is set or another run holds the shared lock (rpl/gate.py), nothing was touched.
 
 Limits, written down: the rollback puts the previous IMAGE back, not the data (a database migrated by the new version needs the dump or the
 snapshot); the route check tests one route, not the whole application.
@@ -24,7 +25,7 @@ import subprocess
 import sys
 import time
 
-from . import config
+from . import config, gate
 
 REFUSED_NAMES = ("gluetun",)
 # All checked with fullmatch: '$' would accept a trailing newline.
@@ -271,6 +272,21 @@ def main(argv, host=HOST):
     if reason:
         print("REFUSED: " + reason)
         return 1
+    if a.dry:                                            # changes nothing: neither the pause switch nor the lock applies
+        why = gate.paused(cfg)
+        if why:
+            print("note: " + why + ": a real run would be refused now")
+        return _run(a, cfg, codes, host)
+    try:
+        with gate.applying(cfg, "patch " + a.service):   # pause switch, then the shared lock, held until the end (rollback included)
+            return _run(a, cfg, codes, host)
+    except gate.NotNow as e:
+        print("NOT NOW: " + str(e) + ": nothing was touched")
+        return gate.EXIT_NOT_NOW
+
+
+def _run(a, cfg, codes, host):
+    """The whole sequence, from the group check on. A real run is called with the shared lock held."""
     why_group = shares_vpn_network(a.compose, a.service, host)
     if why_group:
         print("REFUSED: update group (" + why_group + "): a group is patched as a whole, which this version cannot do yet; "

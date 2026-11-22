@@ -19,6 +19,8 @@ service-level agreement. Only the latest release receives fixes (currently 0.9.x
 - It writes only when you run `rpl patch` (directly, or through `rpl proposals --apply <service>`): one `image:` line of one Compose file (with a backup),
   then `docker compose up` for that one service, and a database dump if you configured one.
 - It never applies anything on its own: proposals are prepared by one command and applied by another.
+- It applies nothing while the pause switch is set (`rpl pause on`, a file in the state directory), and one run at a time (a lock file in the same directory).
+  Both are a safety catch between cooperating runners, not an access control.
 
 It does **not**: authenticate or sandbox anything, run with reduced privileges (it needs the same rights as the user running `docker`),
 patch the host operating system, update stateful data (a rollback restores the previous image, not the data), or protect you from a malicious
@@ -30,7 +32,8 @@ the state directory can recompute it; keep that directory writable only by the u
 ## In scope for a report
 
 - A way to make `rpl patch` or `rpl proposals --apply` run something other than the stored, validated proposal (argument or YAML injection, path tricks).
-- A refusal that can be bypassed: VPN containers, stale or modified proposals, a missing snapshot.
+- A refusal that can be bypassed: VPN containers, stale or modified proposals, a missing snapshot, the pause switch or the shared lock
+  (by someone who cannot write the state directory).
 - A "success" reported when the update did not happen or the scan could not do its job.
 - Secrets or private data written to logs, state files or the repository.
 

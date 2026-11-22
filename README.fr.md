@@ -45,7 +45,7 @@ scan ──► inventaire ──► score de risque ──► vérif. du correct
 
 Construit et utilisé pendant une semaine sur un hôte Docker (65 conteneurs, Traefik, un propriétaire). **Lisez [docs/results.md](docs/results.md) avant de lui faire confiance** (en anglais) : le score n'est **pas validé**. Il est d'accord avec les verdicts de son propriétaire 14 fois sur 20, mais une réponse triviale « toujours différer » en obtient 13 : cela ne montre encore aucune valeur ajoutée ; les rôles ont aussi été réglés après avoir vu ces verdicts. Le retour arrière automatique n'a jamais été déclenché sur un vrai service. Il gère Docker Compose + Traefik, Docker Hub et ghcr.io.
 
-Testé : 225 tests automatiques contre un faux hôte Docker (enchaînement et refus), lancés en CI sur Python 3.9 et 3.12 ; quelques comportements ont aussi été vérifiés à la main sur un vrai Docker (voir les limites ci-dessous).
+Testé : 323 tests automatiques contre un faux hôte Docker (enchaînement et refus), lancés en CI sur Python 3.9 et 3.12 ; quelques comportements ont aussi été vérifiés à la main sur un vrai Docker (voir les limites ci-dessous).
 
 ## Limites connues
 
@@ -63,6 +63,7 @@ Reprises de [docs/results.md](docs/results.md) (en anglais) ; aucune n'est cach�
 - **Une mise à jour en bonne santé mais cassée passe.** Le contrôle prouve que le conteneur est sain, qu'il exécute la nouvelle image et qu'une route répond ; il ne prouve pas que l'application fonctionne.
 - **Le retour arrière rétablit l'image, pas les données.** Une migration de base exécutée par la nouvelle version n'est pas annulée ; seules la sauvegarde ou l'instantané le peuvent.
 - **Les images tirées ne sont pas vérifiées.** L'outil fait confiance au tag et au registre : pas de vérification de signature (cosign ou équivalent), et pour un tag mobile seul le digest que le registre indique à ce moment est épinglé. Un registre ou un mainteneur compromis échappe à ce qu'il peut détecter.
+- **L'interrupteur de pause et le verrou partagé sont un cran de sûreté, pas un contrôle d'accès.** `rpl pause on` arrête tout `rpl patch` et tout `rpl proposals --apply` lancés ensuite (code de sortie 5), et un fichier de verrou empêche deux exécutions d'appliquer en même temps. Les deux sont dans le répertoire d'état : deux exécutants dont le `state_dir` diffère ne se voient pas, et quiconque peut écrire dans ce répertoire peut les retirer. Une exécution déjà commencée n'est pas interrompue par l'interrupteur. Une seconde exécution n'attend pas, elle est refusée. Le verrou est un `flock` : Unix seulement (sans lui rien n'est appliqué), testé sous Linux sur un système de fichiers local, pas sur NFS ni macOS, et jamais avec deux vraies mises à jour concurrentes sur un vrai hôte Docker. Les commandes en lecture seule et `--dry` ignorent les deux.
 - **La détection des groupes lit le mode réseau, pas ce que fait le conteneur.** Un conteneur qui joint les mêmes pairs autrement (port publié, sidecar sans `network_mode`) n'est pas un groupe. La clé de configuration `groups` (politique `auto`/`ask`/`never`, raison, `confirmed`) est lue par `rpl.groups` mais pas encore appliquée par une mise à jour de groupe ; tant qu'elle n'existe pas, tous les membres sont refusés quelle que soit la politique.
 
 ## Feuille de route vers la 1.0
@@ -95,6 +96,8 @@ python -m rpl proposals --apply myapp --dry      # puis sans --dry
 
 `rpl patch` est la dernière étape seule (`rpl patch --help`). Lancez les cinq premières chaque nuit (cron ou timer systemd).
 
+`python -m rpl pause on --reason "..."` empêche toute application jusqu'à `python -m rpl pause off` (`pause status` sort avec le code 1 pendant la pause) ; `touch <state_dir>/PAUSED` fait la même chose sans Python.
+
 ## Fichiers à écrire à la main (voir `examples/`)
 
 | Fichier | Rôle |
@@ -111,6 +114,7 @@ python -m rpl proposals --apply myapp --dry      # puis sans --dry
 - `rpl patch` refuse de démarrer sans commande d'instantané, sauf `--no-snapshot` ; un instantané ou une sauvegarde de base en échec arrête tout avant tout changement.
 - L'essai à blanc doit montrer exactement une recréation, celle du conteneur du service ; tout autre cas (aucune, deux, un autre service, sortie illisible) arrête tout et restaure le fichier compose.
 - Un service qui partage le réseau d'un autre conteneur, ou dont le réseau est partagé (un groupe de mise à jour, par exemple un conteneur VPN et ce qui tourne derrière), est refusé.
+- Avant de lancer la moindre commande, `rpl patch` vérifie l'interrupteur de pause, prend le verrou partagé, puis revérifie l'interrupteur sous le verrou ; il garde le verrou jusqu'à la fin, retour arrière compris. En pause, ou verrou tenu par une autre exécution : code de sortie 5, rien n'est touché. Un interrupteur illisible compte comme une pause ; un verrou impossible à prendre signifie que rien n'est appliqué (`rpl/gate.py`).
 - `rpl proposals --apply` prend les paramètres de la proposition enregistrée, rien de libre, et refuse une proposition vieille de plus de 36 heures, ou dont le fichier a été modifié après son calcul (contrôle SHA-256 : intégrité, pas authentification).
 - `rpl patch` valide les noms de service, de base et d'image avant de lancer quoi que ce soit, et refuse un service que le fichier Compose ne définit pas. Un `docker compose up` ou un essai à blanc en échec compte comme une mise à jour échouée, pas comme un succès. L'épinglage est lié au service demandé : l'image que Compose résout pour lui doit être égale à `--old`, et la ligne modifiée doit se trouver dans son bloc. `--route` et `--codes` sont validés.
 - Après une mise à jour, le conteneur doit exécuter la nouvelle image ; après un retour arrière, il doit exécuter la référence d'origine avec le même identifiant d'image, sinon le résultat est `rollback FAILED: CHECK BY HAND` (code de sortie 4 ; 2 signifie un retour arrière vérifié).

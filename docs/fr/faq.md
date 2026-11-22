@@ -83,6 +83,9 @@ Non, seulement l'image. Si la nouvelle version a lancé une migration de base de
 ### Que veut dire le code de sortie 4 ?
 `rollback FAILED: CHECK BY HAND`. L'outil n'a pas pu prouver que l'image d'origine tourne de nouveau, ou la mise à jour a été interrompue au mauvais moment. Regardez le service vous-même avant de faire autre chose. Le code 2 est un retour arrière vérifié. Je préfère un 4 bien bruyant à un « ok » discret que je ne peux pas justifier.
 
+### Que veut dire le code de sortie 5 ?
+« Pas maintenant » : l'interrupteur de pause est mis (`rpl pause on`), ou une autre exécution tient le verrou partagé. Rien n'a été touché, et la même commande pourra passer plus tard. Une seconde exécution n'attend jamais derrière la première.
+
 ### Et si la vérification passe mais que l'application est cassée ?
 Alors rpl ne le voit pas. La vérification prouve que le conteneur est sain, qu'il fait tourner la nouvelle image, et qu'une route répond. Elle ne prouve pas que l'application fonctionne. C'est pour ça que les propositions se font un service à la fois, avec un instantané, et que je regarde le service après.
 

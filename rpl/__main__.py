@@ -1,4 +1,4 @@
-"""rpl <command>: scan | inventory | risk | fixcheck | proposals | patch | group | sample   (see README.md)"""
+"""rpl <command>: scan | inventory | risk | fixcheck | proposals | patch | group | pause | sample   (see README.md)"""
 import sys
 
 from . import __version__
@@ -11,6 +11,7 @@ COMMANDS = {
     "proposals": "proposals",
     "patch": "patch",
     "group": "group",
+    "pause": "gate",
     "sample": "sample",
 }
 
