@@ -1,14 +1,23 @@
-"""`rpl watch`: tell a human about a group apply that never recorded its result.
+"""`rpl watch`: tell a human about the two open incidents of the group journal: a group apply that never recorded its result, and a rollback
+that failed while its backup is still there.
 
 A process stopped by SIGTERM (a scheduler, `systemctl stop`) prints nothing: the only trace is an entry of the group journal
 (`group-journal.json`) without a result, which blocks every later group apply until `rpl group ... --resume`. This check reads that file and
 nothing else, so it works when the nightly job is dead. Run it from its own timer, every few minutes.
 
-Exit codes: 0 nothing unfinished; 1 at least one unfinished apply; 2 the journal cannot be read (never "OK": it is reported like an unfinished one).
+A failed rollback (`CHECK BY HAND`) stays open for as long as its backup directory exists: `rpl group --purge` never deletes it, so deleting it by
+hand, once the services are repaired, is the acknowledgement. Until then `watch` prints the alert on every run, and sends the message under the
+group apply's own key (`group_key`): the group apply gives its message to `rpl.notify` only once, so a first delivery that failed is retried here
+(the key is the same, so a message that did arrive is not sent twice). No grace and no time window apply: that apply is over, and the incident does
+not expire.
+
+Exit codes: 0 nothing open; 1 at least one open incident (an unfinished apply, or a failed rollback with its backup); 2 the journal cannot be read (never "OK": it is reported like an unfinished one).
 The alert is always printed (a cron mail or a journald line is then the channel of last resort); when `notifications` has channels it is also
 delivered through rpl.notify, one message per journal entry.
 
 Limits, written down:
+  - a failed rollback is told only while its backup path exists: deleting the backup without repairing closes the incident (it is the human's act);
+    an entry that names no usable backup path stays open for ever; the journal keeps 100 entries, so an incident older than that is forgotten;
   - an entry younger than `group_unfinished_grace_minutes` (default 60) is taken for an apply in progress and not reported; an interrupted apply is
     therefore reported after that delay, and an apply that really runs longer than the delay gives a false alarm;
   - the journal is read with plain file access, not under the shared lock: a read during a write sees the old or the new file (the writer replaces it
@@ -28,6 +37,12 @@ from . import config, notify
 
 JOURNAL = "group-journal.json"          # the name groupapply.py writes (a test keeps the two equal)
 DEFAULT_GRACE_MIN = 60
+
+
+def group_key(entry_id, outcome):
+    """The notification key of a group apply: one per apply (its journal entry id) and outcome ("ok", "rolled-back", "rollback-failed").
+    The group apply and `rpl watch` both use it, so `rpl.notify` sends a given message once, whoever gives it first."""
+    return f"group:{entry_id}:{outcome}"
 CLOCK_SKEW_S = 300                      # a start time further in the future than this is not trusted
 
 
@@ -61,7 +76,7 @@ def check(cfg, now=time.time):
     """{"unfinished": [{"id", "parent", "state", "since"}], "problem": str or None}."""
     entries, problem = _read(cfg)
     if problem:
-        return {"unfinished": [], "problem": problem}
+        return {"unfinished": [], "failed_rollbacks": [], "problem": problem}
     grace_s = 60 * float(cfg.get("group_unfinished_grace_minutes", DEFAULT_GRACE_MIN))
     t = now()
     out = []
@@ -70,7 +85,15 @@ def check(cfg, now=time.time):
             plan = e.get("plan") if isinstance(e.get("plan"), dict) else {}
             out.append({"id": str(e.get("id", "?"))[:120], "parent": str(plan.get("parent", "?"))[:120], "state": str(e.get("state", "?"))[:60],
                         "since": e.get("ts") if isinstance(e.get("ts"), (int, float)) else None})
-    return {"unfinished": out, "problem": problem}
+    failed = []
+    for e in entries:
+        if str(e.get("result")).startswith("rollback FAILED"):
+            root = e.get("backup_root")
+            if not (isinstance(root, str) and root) or os.path.exists(root):
+                plan = e.get("plan") if isinstance(e.get("plan"), dict) else {}
+                failed.append({"id": str(e.get("id", "?"))[:120], "parent": str(plan.get("parent", "?"))[:120],
+                               "backup": root if isinstance(root, str) and root else None})
+    return {"unfinished": out, "failed_rollbacks": failed, "problem": problem}
 
 
 def _when(ts):
@@ -86,6 +109,11 @@ def events(result, cfg):
             stamp = "unknown"
         evs.append({"key": f"group-journal-unreadable:{stamp}",
                     "text": f"rpl: the group journal {result['problem']}. A group apply may be unfinished: check {JOURNAL} in the state directory by hand."})
+    for f in result["failed_rollbacks"]:
+        where = f"its backup is kept in {f['backup']}" if f["backup"] else "its journal entry names no backup"
+        evs.append({"key": group_key(f["id"], "rollback-failed"),
+                    "text": f"rpl: the rollback of the group apply {f['id']} (group {f['parent']}) FAILED: check by hand. Services may be stopped or "
+                            f"half restored and {where}. This alert stops when that backup directory is deleted, after you have repaired the services."})
     for u in result["unfinished"]:
         evs.append({"key": f"group-unfinished:{u['id']}",
                     "text": f"rpl: the group apply {u['id']} (group {u['parent']}, started {_when(u['since'])}) never recorded a result; it stopped at "
@@ -110,7 +138,7 @@ def run(cfg, poster=notify.post, now=time.time):
         print("no notification channel configured: this line is the only alert")
     if result["problem"]:
         return 2
-    return 1 if result["unfinished"] else 0
+    return 1 if result["unfinished"] or result["failed_rollbacks"] else 0
 
 
 def main(argv):

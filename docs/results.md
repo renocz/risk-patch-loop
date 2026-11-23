@@ -217,6 +217,12 @@ Fix of the defect named above ("Defect found by this trial, in the group apply")
 - **Rules removed in turn, on a copy:** the three keys back to the plan fingerprint, the "given up" branch, the "queued" branch silent, and the old "anything not delivered is queued" rule: 6 of 6 removals failed at least one test (the `ok` key is guarded by one format test only).
 - **Not verified:** a real `rpl group` on a real host with a real channel (the delivery is the real `notify.deliver` and its `notifs.json`, the channel is a double); an existing `notifs.json` upgraded in place (old keys are never matched again, by reading the code, not by a test).
 
+### A failed rollback stays an open incident (23 November 2026)
+
+The defect: the group apply's `rollback FAILED: CHECK BY HAND` message went to `notify.deliver` once. With the channel down at that moment it stayed `queued` and was never sent again, and `rpl watch` ignored an entry that had a result. Option chosen after a second opinion (4 of 4 members "correct first"; the options were: re-present from `rpl notify` hourly, from `rpl watch` every minute, document only, or loop in the apply): `rpl watch` re-presents it. The incident stays open while the backup directory exists, which nothing but a human deletes (checked in `rpl/groupapply.py`: only the purge removes backup directories, and it keeps those of an unfinished apply and of a failed rollback). Tests first: 11 new tests, 10 failing on the unchanged code; a shared key builder, checked by a test that compares the key the group apply really uses with the one `watch` produces; two end-to-end cases with the real `notify.deliver` (a message that arrived is not sent again, a message whose first delivery failed is sent by `watch` once). Suite 513, passing on Python 3.11, 3.12 and 3.13.
+
+**Not verified:** a failed rollback on a real host (none has happened; the model forces it), a real channel outage at that moment, deleting a real backup directory and seeing the alert stop, two processes sending at the same instant (see the lock change). Not done: retrying the "updated" and "rolled back" messages, an explicit acknowledgement command, and a time limit on an alert nobody deals with.
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.
