@@ -378,6 +378,70 @@ class FileStamp(Base):
             self.assertRegex(notify.file_stamp(path), r"^\d+$")             # falls back to the modification time in nanoseconds
 
 
+class PerChannel(Base):
+    """With two channels, a channel that confirmed an event is not sent it again because the other one failed."""
+
+    A, B = "https://a.example.test/hook-token-aaaa", "https://b.example.test/hook-token-bbbb"
+
+    def setUp(self):
+        super().setUp()
+        self.codes = {self.A: 200, self.B: 500}
+        self.calls = []
+
+        def poster(url, body, headers, allow):
+            self.calls.append(url)
+            return self.codes[url]
+        self.poster = poster
+        self.cfg_ = self.cfg([{"type": "webhook", "url": self.A}, {"type": "webhook", "url": self.B}])
+
+    def go(self, t):
+        return notify.deliver([EV], self.cfg_, self.poster, lambda: t)
+
+    def test_the_healthy_channel_is_not_sent_the_event_again(self):
+        self.go(1000.0)
+        self.codes[self.B] = 200
+        res = self.go(1000.0 + notify.RETRY_BASE_S + 1)
+        self.assertEqual(res["delivered"], [EV["key"]])
+        self.assertEqual(self.calls, [self.A, self.B, self.B])               # A once, B twice
+
+    def test_a_channel_that_keeps_failing_is_retried_and_the_other_is_not(self):
+        t = 1000.0
+        for _ in range(3):
+            self.go(t)
+            t += notify.RETRY_CAP_S
+        self.assertEqual(self.calls.count(self.A), 1)
+        self.assertEqual(self.calls.count(self.B), 3)
+
+    def test_the_state_file_names_no_url_or_token(self):
+        self.go(1000.0)
+        with open(os.path.join(self.cfg_["state_dir"], "notifs.json")) as f:
+            text = f.read()
+        for secret in ("hook-token-aaaa", "hook-token-bbbb", "example.test"):
+            self.assertNotIn(secret, text)
+        self.assertEqual(len(self.state(self.cfg_)[EV["key"]]["sent"]), 1)
+
+    def test_a_channel_added_later_still_gets_the_event(self):
+        self.go(1000.0)                                                      # A confirmed, B failed
+        self.codes["https://c.example.test/hook"] = 200
+        self.cfg_ = self.cfg([{"type": "webhook", "url": self.A}, {"type": "webhook", "url": self.B},
+                              {"type": "webhook", "url": "https://c.example.test/hook"}])
+        self.codes[self.B] = 200
+        self.go(1000.0 + notify.RETRY_BASE_S + 1)
+        self.assertIn("https://c.example.test/hook", self.calls)
+        self.assertEqual(self.calls.count(self.A), 1)
+
+    def test_a_delivered_event_forgets_the_per_channel_list(self):
+        self.go(1000.0)                                                      # A confirmed, B failed: the list is stored
+        self.assertIn("sent", self.state(self.cfg_)[EV["key"]])
+        self.codes[self.B] = 200
+        self.go(1000.0 + notify.RETRY_BASE_S + 1)
+        self.assertNotIn("sent", self.state(self.cfg_)[EV["key"]])
+
+    def test_an_event_nobody_confirmed_has_an_empty_list_and_goes_to_both(self):
+        self.codes[self.A] = 500
+        self.go(1000.0)
+        self.go(1000.0 + notify.RETRY_BASE_S + 1)
+        self.assertEqual((self.calls.count(self.A), self.calls.count(self.B)), (2, 2))
 class RetryAfter(Base):
     """A 429 or 503 that says when to come back: the next try is not earlier than that (never later than the ceiling)."""
 
@@ -546,6 +610,79 @@ class RunBudget(Base):
     def test_no_budget_problem_when_sends_are_fast(self):
         self.poster = lambda url, body, headers, allow, **kw: 200
         self.assertEqual(len(self.run_(10)["delivered"]), 10)
+
+
+class Interactions(Base):
+    """The rules added one by one (per-channel memory, Retry-After, the run budget, critical events) must hold together."""
+
+    A, B = "https://a.example.test/x", "https://b.example.test/x"
+
+    def setUp(self):
+        super().setUp()
+        self.calls = []
+        self.answers = {self.A: 200, self.B: 200}
+        self.cfg_ = self.cfg([{"type": "webhook", "url": self.A}, {"type": "webhook", "url": self.B}])
+        self.clock = [1000.0]
+
+        def poster(url, body, headers, allow, **kw):
+            self.calls.append(url)
+            ans = self.answers[url]
+            return ans() if callable(ans) else ans
+        self.poster = poster
+
+    def go(self, events=None, at=None, **notif):
+        if at is not None:
+            self.clock[0] = at
+        cfg = dict(self.cfg_, notifications=dict(self.cfg_["notifications"], **notif))
+        return notify.deliver(events or [EV], cfg, self.poster, lambda: self.clock[0])
+
+    def throttled(self, seconds):
+        status = notify.Status(429)
+        status.retry_after = seconds
+        return lambda: status
+
+    def test_a_retry_after_on_one_channel_holds_the_event_and_only_that_channel_is_retried(self):
+        self.answers[self.B] = self.throttled(300)
+        self.go(at=1000.0)
+        self.assertEqual(self.state(self.cfg_)[EV["key"]]["next_try"], 1000.0 + 300)
+        self.go(at=1000.0 + 31)                                             # inside the Retry-After: nothing is sent
+        self.assertEqual(self.calls, [self.A, self.B])
+        self.answers[self.B] = 200
+        res = self.go(at=1000.0 + 301)
+        self.assertEqual((res["delivered"], self.calls), ([EV["key"]], [self.A, self.B, self.B]))      # A is not sent it twice
+
+    def test_the_critical_event_is_sent_first_and_a_failed_channel_keeps_its_own_memory(self):
+        crit = dict(EV, key="crit", text="crit", critical=True)
+        info = dict(EV, key="info", text="info")
+        self.answers[self.B] = 500
+        self.go([info, crit], at=1000.0)
+        state = self.state(self.cfg_)
+        self.assertEqual(len(state["crit"]["sent"]), 1)
+        self.assertEqual(len(state["info"]["sent"]), 1)
+        self.answers[self.B] = 200
+        res = self.go([info, crit], at=1000.0 + notify.RETRY_BASE_S + 1)
+        self.assertEqual(sorted(res["delivered"]), ["crit", "info"])
+        self.assertEqual(self.calls.count(self.A), 2)                       # once for each event, never again
+
+    def test_a_held_event_does_not_change_the_channels_that_confirmed_it(self):
+        self.answers[self.B] = 500
+        self.go(at=1000.0)
+        before = self.state(self.cfg_)[EV["key"]]["sent"]
+        self.go(at=1000.0 + 1)                                              # held by its delay
+        self.assertEqual(self.state(self.cfg_)[EV["key"]]["sent"], before)
+
+    def test_an_event_cut_by_the_budget_has_no_state_and_goes_to_every_channel_next_time(self):
+        def slow(url, body, headers, allow, **kw):
+            self.calls.append(url)
+            self.clock[0] += 50
+            return 200
+        self.poster = slow
+        first, second = dict(EV, key="k1", text="1"), dict(EV, key="k2", text="2")
+        res = self.go([first, second], at=1000.0, run_budget_s=30)
+        self.assertEqual((res["delivered"], res["queued"]), (["k1"], ["k2"]))
+        self.assertNotIn("k2", self.state(self.cfg_))
+        self.go([first, second], at=2000.0)
+        self.assertEqual(sorted(self.calls[-2:]), sorted([self.A, self.B]))
 
 
 class NightlyMissing(unittest.TestCase):
