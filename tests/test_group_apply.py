@@ -865,6 +865,82 @@ class OneMessagePerApply(GroupCase):
         self.assertNotIn("queued", out)
 
 
+class JournalRetention(GroupCase):
+    """The journal keeps the last 100 entries; an open incident (an apply with no result, a failed rollback) must not be dropped by newer ones."""
+
+    def put(self, entries):
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL), json.dumps(entries))
+
+    def finished(self, n):
+        return [{"id": f"done-{i}", "ts": 1000.0 + i, "result": "ok", "plan": {"parent": "p"}} for i in range(n)]
+
+    def test_old_open_incidents_survive_a_hundred_newer_entries(self):
+        unfinished = {"id": "old-unfinished", "ts": 1.0, "result": None, "plan": {"parent": "p"}, "backup_root": "/nowhere/a"}
+        failed = {"id": "old-failed", "ts": 2.0, "result": "rollback FAILED: CHECK BY HAND", "plan": {"parent": "p"}, "backup_root": "/nowhere/b"}
+        self.put([unfinished, failed] + self.finished(150))
+        groupapply._record(self.cfg, {"id": "new", "ts": 9999.0, "result": "ok", "plan": {"parent": "p"}})
+        ids = [e["id"] for e in groupapply._journal(self.cfg)]
+        self.assertIn("old-unfinished", ids)
+        self.assertIn("old-failed", ids)
+        self.assertEqual(len(ids), 2 + 100)
+        self.assertEqual(ids[-1], "new")
+
+    def test_old_finished_entries_are_still_dropped(self):
+        self.put(self.finished(150))
+        groupapply._record(self.cfg, {"id": "new", "ts": 9999.0, "result": "ok", "plan": {"parent": "p"}})
+        ids = [e["id"] for e in groupapply._journal(self.cfg)]
+        self.assertEqual(len(ids), 100)
+        self.assertNotIn("done-0", ids)
+
+    def test_a_rollback_that_succeeded_is_not_kept_for_ever(self):
+        self.put([{"id": "old-ok", "ts": 1.0, "result": "rollback ok", "plan": {"parent": "p"}}] + self.finished(150))
+        groupapply._record(self.cfg, {"id": "new", "ts": 9999.0, "result": "ok", "plan": {"parent": "p"}})
+        self.assertNotIn("old-ok", [e["id"] for e in groupapply._journal(self.cfg)])
+
+    def test_a_journal_below_the_limit_is_kept_whole(self):
+        self.put(self.finished(10))
+        groupapply._record(self.cfg, {"id": "new", "ts": 9999.0, "result": "ok", "plan": {"parent": "p"}})
+        self.assertEqual(len(groupapply._journal(self.cfg)), 11)
+
+
+class UnfinishedEntryIncomplete(GroupCase):
+    """`--resume` indexes the entry's id, plan and backup path. An entry that lacks one used to end in a traceback, with the incident still open
+    and nothing said to the human: it is now refused in words."""
+
+    def put(self, entry):
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL), json.dumps([entry]))
+
+    def good(self):
+        return {"id": "p-20261120-000000", "ts": 1000.0, "result": None, "state": "changing", "backup_root": "/nowhere/backup",
+                "plan": {"parent": "p", "compose": "/nowhere/compose.yaml", "members": [{"service": "s", "from": "a", "to": "b"}]}}
+
+    def test_each_missing_or_malformed_piece_is_refused_in_words(self):
+        cases = {"no id": lambda e: e.pop("id"),
+                 "an id that is not a string": lambda e: e.update(id=3),
+                 "no plan": lambda e: e.pop("plan"),
+                 "a plan that is not an object": lambda e: e.update(plan=[1]),
+                 "no parent": lambda e: e["plan"].pop("parent"),
+                 "no compose file": lambda e: e["plan"].pop("compose"),
+                 "no members": lambda e: e["plan"].pop("members"),
+                 "members that are not a list": lambda e: e["plan"].update(members="x"),
+                 "a member that is not an object": lambda e: e["plan"].update(members=["x"]),
+                 "no backup path": lambda e: e.pop("backup_root"),
+                 "a backup path that is not a string": lambda e: e.update(backup_root=3)}
+        for name, damage in cases.items():
+            with self.subTest(name):
+                e = self.good()
+                damage(e)
+                self.put(e)
+                rc, out = self.run_group("--resume")
+                self.assertEqual(rc, 1, out)
+                self.assertIn("REFUSED", out)
+                self.assertIn("cannot be resumed", out)
+                self.assert_nothing_changed()
+
+    def test_a_complete_entry_is_still_resumed(self):
+        self.assertEqual(groupapply._resume_problem(self.good()), None)
 class RetriedByTheCollector(GroupCase):
     """The group apply gives its "updated" and "rolled back" messages to `deliver` once. `rpl notify` produces them again from the journal, with
     the same key and the same text, so a message whose first delivery failed is retried and one that arrived is not sent twice."""

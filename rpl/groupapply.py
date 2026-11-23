@@ -418,10 +418,23 @@ def _journal(cfg):
     return data
 
 
+JOURNAL_KEEP = 100
+
+
+def _open_incident(e):
+    """An entry nobody has dealt with: an apply that never recorded a result, or a rollback that failed (`rpl watch` alerts on both)."""
+    return isinstance(e, dict) and (e.get("result") is None or str(e.get("result")).startswith("rollback FAILED"))
+
+
+def _kept(data):
+    """The last JOURNAL_KEEP entries, plus every older open incident: newer entries must not make `rpl watch` and the purge forget one."""
+    return [e for e in data[:-JOURNAL_KEEP] if _open_incident(e)] + data[-JOURNAL_KEEP:]
+
+
 def _save(cfg, data):
     path = config.state(cfg, JOURNAL)
     with os.fdopen(os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
-        json.dump(data[-100:], f, ensure_ascii=False)
+        json.dump(_kept(data), f, ensure_ascii=False)
         f.flush()
         os.fsync(f.fileno())
     os.replace(path + ".tmp", path)
@@ -653,6 +666,25 @@ def resume(a, cfg, host):
     return _locked(a, cfg, "group resume", _resume, host)
 
 
+def _resume_problem(entry):
+    """None when the journal entry holds what a rollback reads (id, plan with parent, compose file and members, backup path), else what is missing.
+    An entry written by this tool has all of it; one that was edited or damaged by hand may not."""
+    plan = entry.get("plan")
+    if not isinstance(entry.get("id"), str) or not entry["id"]:
+        return "it has no id"
+    if not isinstance(plan, dict):
+        return "it has no plan"
+    for key in ("parent", "compose"):
+        if not isinstance(plan.get(key), str) or not plan[key]:
+            return f"its plan has no {key}"
+    members = plan.get("members")
+    if not isinstance(members, list) or not all(isinstance(m, dict) and isinstance(m.get("service"), str) for m in members):
+        return "its plan has no usable list of members"
+    if not isinstance(entry.get("backup_root"), str) or not entry["backup_root"]:
+        return "it names no backup"
+    return None
+
+
 def _resume(a, cfg, host):
     try:
         entry = unfinished(cfg)
@@ -662,6 +694,10 @@ def _resume(a, cfg, host):
     if entry is None:
         print("nothing to resume: no group apply is unfinished")
         return 0
+    why = _resume_problem(entry)
+    if why:
+        print(f"REFUSED: the unfinished apply cannot be resumed: {why}. Check by hand: repair the journal entry or do the rollback yourself.")
+        return 1
     print(f"unfinished apply of group {entry['plan']['parent']} (stopped at '{entry.get('state')}'): rolling back")
     rc = _finish_rollback(entry, cfg, host, "interrupted at '" + str(entry.get("state")) + "'")
     return 0 if rc == 2 else rc
