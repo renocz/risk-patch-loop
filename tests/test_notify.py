@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from rpl import notify
@@ -323,6 +324,32 @@ class Concurrency(Base):
         for i in range(5):
             notify.deliver([dict(EV, key=f"k{i}")], self.cfg_, lambda *a: 200)
         self.assertEqual(len(self.state(self.cfg_)), 5)
+
+
+class FileStamp(Base):
+    def test_the_stamp_follows_the_content_not_only_the_modification_second(self):
+        path = os.path.join(self.d, "f.json")
+        stamps = []
+        for content in ("a", "b", "bb"):
+            with open(path, "w") as f:
+                f.write(content)
+            os.utime(path, (1_700_000_000, 1_700_000_000))
+            stamps.append(notify.file_stamp(path))
+        self.assertEqual(len(set(stamps)), 3)
+
+    def test_the_same_content_gives_the_same_stamp(self):
+        path = os.path.join(self.d, "f.json")
+        with open(path, "w") as f:
+            f.write("a")
+        self.assertEqual(notify.file_stamp(path), notify.file_stamp(path))
+
+    def test_a_file_that_cannot_be_read_or_does_not_exist_still_gets_a_stamp(self):
+        self.assertEqual(notify.file_stamp(os.path.join(self.d, "missing.json")), "unknown")
+        path = os.path.join(self.d, "f.json")
+        with open(path, "w") as f:
+            f.write("a")
+        with mock.patch("builtins.open", side_effect=PermissionError(13, "denied")):
+            self.assertRegex(notify.file_stamp(path), r"^\d+$")             # falls back to the modification time in nanoseconds
 
 
 class NightlyMissing(unittest.TestCase):

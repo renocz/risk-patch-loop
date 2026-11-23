@@ -222,6 +222,15 @@ class NewApplications(Base):
         self.inventory("app-1", "app-2")
         self.assertEqual(self.keys(), [])
 
+    def test_two_different_broken_files_in_the_same_second_are_two_error_events(self):
+        path = os.path.join(self.state, "inventory.json")
+        keys = set()
+        for content in ("{broken", "[1]", "[2]"):
+            self.put("inventory.json", content)
+            os.utime(path, (1_700_000_000, 1_700_000_000))
+            keys |= {k for k in self.keys() if k.startswith("error:inventory.json")}
+        self.assertEqual(len(keys), 3)
+
     def test_an_unreadable_inventory_is_an_error_event_and_keeps_the_baseline(self):
         self.inventory("app-1")
         self.run_cmd()

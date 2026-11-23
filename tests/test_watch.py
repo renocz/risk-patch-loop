@@ -124,6 +124,23 @@ class Unreadable(Base):
         self.assertEqual(len(self.posts), 1)
         self.assertIn("cannot be read", out)
 
+    def test_two_different_damaged_journals_in_the_same_second_give_two_messages(self):
+        path = os.path.join(self.state, watch.JOURNAL)
+        for content in ("{not json", '["x"]', "[1]", "[2]"):                  # the last two have the same size
+            with open(path, "w") as f:
+                f.write(content)
+            os.utime(path, (1_700_000_000, 1_700_000_000))                    # the same modification second, every time
+            self.run_watch()
+        self.assertEqual(len(self.posts), 4, "a different damaged file is a different message")
+
+    def test_the_same_damaged_journal_is_told_once(self):
+        path = os.path.join(self.state, watch.JOURNAL)
+        with open(path, "w") as f:
+            f.write("{not json")
+        self.run_watch()
+        self.run_watch()
+        self.assertEqual(len(self.posts), 1)
+
     def test_a_journal_that_is_not_a_list_is_never_ok(self):
         self.journal({"result": None})                                     # groupapply would read it as "no entries"
         self.assertEqual(self.run_watch()[0], 2)

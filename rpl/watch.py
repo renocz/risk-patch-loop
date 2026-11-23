@@ -103,10 +103,7 @@ def _when(ts):
 def events(result, cfg):
     evs = []
     if result["problem"]:
-        try:
-            stamp = int(os.stat(config.state(cfg, JOURNAL)).st_mtime)
-        except OSError:
-            stamp = "unknown"
+        stamp = notify.file_stamp(config.state(cfg, JOURNAL))
         evs.append({"key": f"group-journal-unreadable:{stamp}",
                     "text": f"rpl: the group journal {result['problem']}. A group apply may be unfinished: check {JOURNAL} in the state directory by hand."})
     for f in result["failed_rollbacks"]:
