@@ -162,7 +162,12 @@ def _commit(path, key, st):
         state = _load(path)
         state[key] = st
         tmp = f"{path}.{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)      # owner-only whatever the umask: container and image names, last errors
+        try:
+            os.fchmod(fd, 0o600)                                              # also when a leftover temporary file already existed with other rights
+        except (AttributeError, OSError):
+            pass
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False)
         os.replace(tmp, path)
 

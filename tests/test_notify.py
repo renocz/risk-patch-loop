@@ -308,6 +308,32 @@ class Concurrency(Base):
         notify._commit(os.path.join(self.cfg_["state_dir"], "notifs.json"), "k", {"delivered": True, "tries": 1})
         self.assertGreaterEqual(time.monotonic() - start, hold_s * 0.6, "the update did not wait for the lock")
 
+    def test_the_state_file_is_owner_only_whatever_the_umask(self):
+        """notifs.json holds container and image names and the last error of each channel: owner-only like the journal and the lock."""
+        old = os.umask(0o022)                                                # a common umask: files would be created 0644
+        self.addCleanup(os.umask, old)
+        notify.deliver([EV], self.cfg_, lambda *a: 500)
+        path = os.path.join(self.cfg_["state_dir"], "notifs.json")
+        self.assertEqual(os.stat(path).st_mode & 0o077, 0)
+
+    def test_an_existing_world_readable_state_file_is_tightened_at_the_next_write(self):
+        os.makedirs(self.cfg_["state_dir"], exist_ok=True)
+        path = os.path.join(self.cfg_["state_dir"], "notifs.json")
+        with open(path, "w") as f:
+            json.dump({}, f)
+        os.chmod(path, 0o644)
+        notify.deliver([EV], self.cfg_, lambda *a: 200)
+        self.assertEqual(os.stat(path).st_mode & 0o077, 0)
+
+    def test_a_leftover_temporary_file_with_loose_rights_does_not_leak_into_the_state_file(self):
+        os.makedirs(self.cfg_["state_dir"], exist_ok=True)
+        leftover = os.path.join(self.cfg_["state_dir"], f"notifs.json.{os.getpid()}.tmp")
+        with open(leftover, "w") as f:
+            f.write("{}")
+        os.chmod(leftover, 0o666)                                            # left by an earlier crashed run of this very pid
+        notify.deliver([EV], self.cfg_, lambda *a: 200)
+        self.assertEqual(os.stat(os.path.join(self.cfg_["state_dir"], "notifs.json")).st_mode & 0o077, 0)
+
     def test_the_lock_file_is_owner_only(self):
         notify.deliver([EV], self.cfg_, lambda *a: 200)
         mode = os.stat(os.path.join(self.cfg_["state_dir"], "notifs.json.lock")).st_mode & 0o777
