@@ -298,6 +298,22 @@ class Delivery(Base):
         self.assertTrue(all(v["delivered"] for v in state.values()))
 
 
+class Critical(Base):
+    def test_every_event_of_watch_is_critical(self):
+        os.makedirs(os.path.join(self.tmp.name, "b"))
+        failed = FailedRollback.failed(self, id="f")                       # a failed rollback with its backup
+        self.journal([failed, self.entry(id="u")])                          # and an apply that never finished
+        evs = watch.events(watch.check(self.cfg, lambda: NOW), self.cfg)
+        self.assertEqual(len(evs), 2)
+        self.assertTrue(all(e.get("critical") is True for e in evs))
+
+    def test_the_unreadable_journal_event_is_critical(self):
+        with open(os.path.join(self.state, watch.JOURNAL), "w") as f:
+            f.write("{broken")
+        evs = watch.events(watch.check(self.cfg, lambda: NOW), self.cfg)
+        self.assertEqual([e.get("critical") for e in evs], [True])
+
+
 class Key(unittest.TestCase):
     def test_the_key_format_is_fixed_because_it_is_stored_in_notifs_json(self):
         self.assertEqual(watch.group_key("proj-vpn-1-20261120-000000", "rollback-failed"), "group:proj-vpn-1-20261120-000000:rollback-failed")

@@ -503,6 +503,43 @@ class RunBudget(Base):
         self.assertEqual(self.sent, ["t0", "t1", "t2", "t3"])
         self.assertEqual(res["delivered"], ["k2", "k3"])
 
+    def critical(self, i):
+        return dict(EV, key=f"c{i}", text=f"critical{i}", critical=True)
+
+    def info(self, i):
+        return dict(EV, key=f"k{i}", text=f"info{i}")
+
+    def go(self, events, **notif):
+        cfg = self.cfg([{"type": "webhook", "url": "https://h.example.test/x"}], **notif)
+        return notify.deliver(events, cfg, self.poster, lambda: self.clock[0])
+
+    def test_a_critical_event_goes_first_whatever_its_place(self):
+        self.go([self.info(0), self.info(1), self.critical(0)], run_budget_s=30)
+        self.assertEqual(self.sent[0], "critical0")
+
+    def test_slow_ordinary_events_cannot_starve_a_critical_one(self):
+        """Five "updated" messages at 14 s a call would use the 45 s budget before a CHECK BY HAND placed after them."""
+        self.poster = lambda url, body, headers, allow, **kw: (self.sent.append(json.loads(body)["text"]), self.clock.__setitem__(0, self.clock[0] + 14), 200)[2]
+        res = self.go([self.info(i) for i in range(5)] + [self.critical(0)])
+        self.assertIn("c0", res["delivered"])
+        self.assertEqual(self.sent[0], "critical0")
+        self.assertEqual(len(res["delivered"]) + len(res["queued"]), 6)
+
+    def test_the_budget_never_holds_a_critical_event(self):
+        res = self.go([self.critical(0), self.critical(1), self.critical(2), self.info(0)], run_budget_s=30)     # 20 s a call
+        self.assertEqual(res["delivered"], ["c0", "c1", "c2"])
+        self.assertEqual(res["queued"], ["k0"])
+
+    def test_saturated_runs_in_a_row_still_send_the_critical_one_at_once(self):
+        for run in range(3):
+            events = [self.info(10 * run + i) for i in range(5)] + [self.critical(run)]
+            res = self.go(events, run_budget_s=30)
+            self.assertIn(f"c{run}", res["delivered"])
+
+    def test_without_a_flag_nothing_changes_the_order(self):
+        self.go([self.info(0), self.info(1), self.info(2)], run_budget_s=1000)
+        self.assertEqual(self.sent, ["info0", "info1", "info2"])
+
     def test_the_default_budget_is_under_a_minute(self):
         self.assertLess(notify.RUN_BUDGET_S, 60)
 

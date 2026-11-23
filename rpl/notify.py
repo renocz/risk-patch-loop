@@ -15,12 +15,14 @@ Rules, each covered by a test:
   - notifs.json is written by several processes (`rpl watch`, `rpl notify`, the group apply): each event's state is written alone, under a lock
     on notifs.json.lock, after reading the file again, so one run never erases what another recorded; if the lock cannot be taken within
     LOCK_WAIT_S the write goes on without it (a possible duplicate message, never a lost mark or a stopped alert);
+  - an event may carry "critical": True (an apply that never finished, a failed rollback, an unreadable state, a missing or failed nightly run, a patch
+    that needs a human): critical events are sent first and the run's time budget never holds one; the others wait for the next run when it is used up;
   - a `Retry-After` of a failed event lengthens its wait when it is longer than the calendar, never past one hour; the longest of the failing channels counts;
   - one message per event key (the key carries the version, e.g. "fix:app-1:CVE-2026-0001:2.4.1");
   - secrets are read from files that must not be readable by group or others, and are never printed, logged or put in the state file;
   - the webhook resolves the host ONCE, refuses private, loopback and link-local addresses (unless allow_private), connects to the
     address it checked, and does not follow redirects.
-Limits, written down: how long 20 tries last depends on how often the caller runs (about 13 h at one run per minute, about 20 h at one per hour); a `Retry-After` given as a date (not as seconds) is ignored; a channel that hangs holds a run for its timeout (15 s, `timeout_s` per channel, 60 at most) and a run stops starting new sends after `run_budget_s` (45 s), so the events left wait for the next run;
+Limits, written down: how long 20 tries last depends on how often the caller runs (about 13 h at one run per minute, about 20 h at one per hour); a `Retry-After` given as a date (not as seconds) is ignored; a channel that hangs holds a run for its timeout (15 s, `timeout_s` per channel, 60 at most) and a run stops starting new sends after `run_budget_s` (45 s), so the events left wait for the next run (the budget is checked before an event, never between its channels: one slow event can exceed it by its timeouts); the wait is per event, not per channel;
 "delivered" means the receiving service answered 2xx, not that a person read it. The nightly-run check is a function
 (`missing_run`) the caller runs from a timer that does not depend on the nightly job. A channel that succeeded is not remembered separately:
 when one of two channels fails, the event is sent again to both on the next try.
@@ -203,6 +205,7 @@ def deliver(events, cfg, poster=post, now=time.time):
     budget = float(notif.get("run_budget_s") or RUN_BUDGET_S)
     started = now()
     out = {"delivered": [], "queued": [], "given_up": []}
+    events = sorted(events, key=lambda e: not e.get("critical"))     # critical events first (the sort is stable: the rest keep their order)
     for ev in events:
         key = ev["key"]
         st = _load(path).get(key)                         # read again for each event: another process may have recorded it meanwhile
@@ -218,7 +221,7 @@ def deliver(events, cfg, poster=post, now=time.time):
         if st["tries"] and isinstance(due, (int, float)) and t < due <= t + RETRY_CAP_S:
             out["queued"].append(key)                         # waiting for its delay: not a try (a time further ahead than the cap is not trusted)
             continue
-        if t - started >= budget:
+        if t - started >= budget and not ev.get("critical"):
             out["queued"].append(key)                         # this run has used its time: the event waits for the next one, not a try
             continue
         st["tries"] += 1
@@ -272,8 +275,8 @@ def file_stamp(path):
 def missing_run(last_run_ts, now_ts, max_hours=36):
     """An event when the nightly run has not happened for `max_hours` (or never), else None. Meant for a timer independent of the nightly job."""
     if last_run_ts is None:
-        return {"key": "nightly-missing:never", "text": "The nightly run has never completed."}
+        return {"key": "nightly-missing:never", "text": "The nightly run has never completed.", "critical": True}
     age_h = (now_ts - last_run_ts) / 3600
     if age_h > max_hours:
-        return {"key": f"nightly-missing:{int(last_run_ts)}", "text": f"The nightly run has not completed for {age_h:.0f} h."}
+        return {"key": f"nightly-missing:{int(last_run_ts)}", "text": f"The nightly run has not completed for {age_h:.0f} h.", "critical": True}
     return None

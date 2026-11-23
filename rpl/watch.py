@@ -104,15 +104,15 @@ def events(result, cfg):
     evs = []
     if result["problem"]:
         stamp = notify.file_stamp(config.state(cfg, JOURNAL))
-        evs.append({"key": f"group-journal-unreadable:{stamp}",
+        evs.append({"key": f"group-journal-unreadable:{stamp}", "critical": True,
                     "text": f"rpl: the group journal {result['problem']}. A group apply may be unfinished: check {JOURNAL} in the state directory by hand."})
     for f in result["failed_rollbacks"]:
         where = f"its backup is kept in {f['backup']}" if f["backup"] else "its journal entry names no backup"
-        evs.append({"key": group_key(f["id"], "rollback-failed"),
+        evs.append({"key": group_key(f["id"], "rollback-failed"), "critical": True,
                     "text": f"rpl: the rollback of the group apply {f['id']} (group {f['parent']}) FAILED: check by hand. Services may be stopped or "
                             f"half restored and {where}. This alert stops when that backup directory is deleted, after you have repaired the services."})
     for u in result["unfinished"]:
-        evs.append({"key": f"group-unfinished:{u['id']}",
+        evs.append({"key": f"group-unfinished:{u['id']}", "critical": True,
                     "text": f"rpl: the group apply {u['id']} (group {u['parent']}, started {_when(u['since'])}) never recorded a result; it stopped at "
                             f"'{u['state']}'. Services may be stopped or half updated and every later group apply is refused. "
                             "Run `rpl group --compose <file> --parent <parent> --resume` to roll back."})
