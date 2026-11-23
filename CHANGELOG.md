@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Group journal: open incidents survive newer entries, an incomplete entry is refused in words
+- The group journal kept the last 100 entries, so an old apply with no result or a failed rollback was forgotten after 100 newer applies, and `rpl watch` and the purge forgot it with it. It now keeps the last 100 entries and every older open incident (result `None` or `rollback FAILED...`); finished entries still age out.
+- `--resume` indexed the unfinished entry's id, plan, parent, compose file, members and backup path: an entry that lacked one (edited or damaged by hand, valid JSON) ended in a traceback with the incident still open and nothing said. It is now refused in words (`REFUSED: the unfinished apply cannot be resumed: <what is missing>`, exit 1, nothing changed), and the incident stays open (`rpl watch` keeps alerting).
+- 6 new tests (`JournalRetention` 4, `UnfinishedEntryIncomplete` 2, 11 sub-cases of damage), 3 of them failing or erroring before (the others check that finished entries still age out and that a journal under the limit is kept whole); of 11 removals of the rules 11 fail a test. Suite 535, Python 3.11, 3.12, 3.13. Not verified on a real host; a hand-damaged journal that is still a list of objects with the fields present but wrong in value is not checked further.
+
 ### Notifications: notifs.json is owner-only
 - `notifs.json` was created with the caller's umask (0644 under the common 022); only `notifs.json.lock` was forced to 0600. It holds container and image names and the last error of each channel. It is now written 0600 (`os.open` with 0600 and `fchmod`, so a leftover temporary file with loose rights does not leak into it), and an existing world-readable one is tightened at its next write. Found by the replay of #19 and #20 on the host.
 - 3 new tests, 3 failing before; suite 529, Python 3.11, 3.12, 3.13. Of 2 removals of its rules, 1 fails a test and 1 survives (an equivalent mutant: `fchmod` restores 0600 anyway). The replay on the host of #19 and #20 is recorded in `docs/results.md`: failed rollback re-presented once and closed when the backup was deleted, no mark lost over 400 concurrent turns, a held lock does not stop an alert (5.1 s).
