@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### README test count
+- The README test count (EN and FR) was left at 529 while the notifications series was merged in several pull requests; it is set to 586, the number of tests that pass on `main` on Python 3.11, 3.12 and 3.13 (CI runs 3.9 and 3.12).
+
 ### Group journal: open incidents survive newer entries, an incomplete entry is refused in words
 - The group journal kept the last 100 entries, so an old apply with no result or a failed rollback was forgotten after 100 newer applies, and `rpl watch` and the purge forgot it with it. It now keeps the last 100 entries and every older open incident (result `None` or `rollback FAILED...`); finished entries still age out.
 - `--resume` indexed the unfinished entry's id, plan, parent, compose file, members and backup path: an entry that lacked one (edited or damaged by hand, valid JSON) ended in a traceback with the incident still open and nothing said. It is now refused in words (`REFUSED: the unfinished apply cannot be resumed: <what is missing>`, exit 1, nothing changed), and the incident stays open (`rpl watch` keeps alerting).
