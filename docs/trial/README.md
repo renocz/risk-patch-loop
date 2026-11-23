@@ -4,7 +4,7 @@
 
 This sequence was run on 22 November 2026 in a sandbox (Docker 29.10.0, Compose v5.7.1) and on the author's host (Docker 29.10.0, Compose 5.8.0, Python 3.11.2); see [docs/results.md](../results.md). At each step, "Expect" is what was seen then. If you see something else, stop and keep the output.
 
-The procedure for trying `rpl watch` and `rpl notify` on the same group, with a real webhook and a timer, is in [notify.md](notify.md); it has not been run yet.
+The procedure for trying `rpl watch` and `rpl notify` on the same group, with a real webhook and a timer, is in [notify.md](notify.md); it was run once on 23 November 2026, with a local receiver (see docs/results.md).
 
 ## What the script builds
 

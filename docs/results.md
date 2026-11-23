@@ -169,6 +169,22 @@ Two additions on top of `rpl/notify.py`: `rpl/watch.py` (a group apply that neve
 
 **Found while writing it, not fixed:** `groupapply._journal` returns an empty list for a journal that is valid JSON but not a list, so the group apply would read it as "nothing unfinished"; `rpl watch` reports it as unreadable instead. The group apply was not touched.
 
+### Supervised trial of `rpl watch` and `rpl notify` (23 November 2026)
+
+Procedure `docs/trial/notify.md` at commit 4768ca6, run by the owner's local agent on the author's host (an LXC container, run as root; Docker 29.10.0, Compose 5.8.0, Python 3.11.2, systemd 252) on the disposable trial group. **The channel was a temporary HTTP receiver on the loopback interface (with `allow_private`), not a remote service: nothing went to Telegram or to a real webhook.** The code, the real `rpl.json`, the real state and the real nightly job were not touched.
+
+- `rpl watch`: exit 0 and silent on a clean state. Two applies killed by SIGTERM, one right after `backup:` (journal state `backed-up`) and one after `parent: recreated` (state `changing`), both exit 143: `watch` at once gave exit 0 (grace of 1 minute, set for the test), at +70 s exit 1 with an `ALERT` line and one message, a second run exit 1 with no second message, the next apply was refused, `--resume` printed `rollback ok`, the three containers ran their original images again, and `watch` returned to exit 0. A journal holding `{"result": null}`: exit 2 and one message; restored: exit 0.
+- Timer alone (two throw-away system units, every minute, nothing else running, no `rpl watch` by hand): a third kill at 17:19:22 UTC, the alert at 17:20:29, the message received 67 s after the kill, several later ticks printing `ALERT`, one message. No permission error reading the secret, as root.
+- `rpl notify`: first run `baseline recorded: 78 containers`; a container added while the channel pointed to a name that does not resolve: `1 queued`, exit 1, `notifs.json` with `tries` 1 and `last_error` `webhook: the host name does not resolve`, no URL or token in it; channel restored: delivered once, then nothing; the removed container never reported.
+- Nightly script copy under `set -e`: success writes `ok`, no message; `scan` replaced by `false` writes `failed` (the trap runs) and one message `The nightly run failed: nightly exited 1`; a record aged by 40 h gives one message `has not completed for 40 h`, none on the next run.
+- Ten messages received in all; none carried the secret or a path of a home directory. A delivery took 2 ms on the loopback receiver, which says nothing about a remote service. No false alert and no duplicate alert.
+
+**Defect found by this trial, in the group apply (not fixed in this change, a separate task is open):** the messages `rolled-back` and `rollback-failed` of `rpl group` are keyed on parent, plan fingerprint and outcome. After the first resume, the later resumes of the same plan sent nothing and printed `notification not delivered yet (queued, see notifs.json)`, although nothing was queued: `notify.deliver` leaves an already delivered key out of its lists, and `_tell` reads that as "not delivered". Read in the code afterwards: a second failed rollback of the same plan, including `CHECK BY HAND`, would be silent. `rpl watch` does not cover this case (the entry has a result by then).
+
+**Where the procedure was wrong or silent, now corrected in `notify.md`:** `rpl notify` has no test option (step 0 gave one); the first `rpl notify` also reports a missing nightly run when no job records one; the group apply sends its own first `rolled back` message; a receiver on the same host needs `allow_private`; `systemctl --user` does not work as root in an LXC container (system units were used, written by the agent from the description, not from a model); a monitoring tool on the host also alerts on the killed containers.
+
+**Not verified:** a remote webhook or Telegram (latency, quota, network failure, formatting); a timer under a non-root account and the secret read by another account; a user unit; a server restart with the timer active; a timer that stops; the duration of a normal apply (every apply of the trial was interrupted, so the grace of 60 minutes is still a guess); a nightly job that really runs from cron or a timer; two runs at the same instant.
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.

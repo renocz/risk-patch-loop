@@ -1,6 +1,6 @@
 # A supervised trial of `rpl watch` and `rpl notify` on a real host
 
-Nothing here has been run yet: this is the procedure, written before the trial, after a second opinion on a first draft. Run it on the disposable trial group of [README.md](README.md) (Step 0 to Step 2 done, the `rpl` function from `env.sh` sourced), with a real webhook. Keep every output; when something differs from "Expect", stop. Results go to `docs/results.md` with date and versions, and no secret.
+Run once on 23 November 2026 (results in [docs/results.md](../results.md)); the procedure below is the corrected one, with the gaps that run found. Run it on the disposable trial group of [README.md](README.md) (Step 0 to Step 2 done, the `rpl` function from `env.sh` sourced), with a real webhook. Keep every output; when something differs from "Expect", stop. Results go to `docs/results.md` with date and versions, and no secret.
 
 Rules for the run: use the trial's own state directory (`$T/state`), never your real one; do not paste the webhook URL or its secret anywhere in the results; the PR stays a draft until this is done and written up.
 
@@ -14,8 +14,10 @@ Rules for the run: use the trial's own state directory (`$T/state`), never your 
 "group_unfinished_grace_minutes": 1
 ```
 
-3. Measure first: the latency of one `rpl notify` delivery to your endpoint, and the quota, if any. A slow or rate-limited channel looks like a failure.
-4. Keep a copy of the trial's `rpl.json` before editing it, to restore it at the end (the grace goes back to 60).
+3. Measure first the latency of one delivery to your endpoint, and the quota, if any. `rpl notify` has no test option: send one message by calling `python3 -c 'from rpl import notify, config; print(notify.deliver([{"key": "trial-test", "text": "rpl trial test"}], config.load()))'` (with `RPL_CONFIG` set). A slow or rate-limited channel looks like a failure.
+4. A receiver on the same host is refused unless the channel has `"allow_private": true`; the first real remote webhook is a different test (latency, quota, network failure), say which one you ran.
+5. If a monitoring tool watches the trial's containers, its alerts for `Exited 143` are not rpl's: do not count them as messages.
+6. Keep a copy of the trial's `rpl.json` before editing it, to restore it at the end (the grace goes back to 60).
 
 ## 1. The check is quiet when nothing is wrong
 
@@ -38,7 +40,7 @@ Expect the entry open (`result` None; note its `state`: it may be `changing` rat
 
 Expect `exit 1`, a line `ALERT: rpl: the group apply ... never recorded a result`, and one message received. Run it once more: `exit 1`, no second message. Check that the message carries no secret and no path of your home directory.
 
-Then `rpl group ... --resume` as in Step 5, and `rpl watch`: expect `exit 0`. Repeat from "run B" (kill after `^parent: recreated`) to see a second instant. Check that after each `--resume` the three containers run their original images.
+Then `rpl group ... --resume` as in Step 5, and `rpl watch`: expect `exit 0`. The group apply also sends its own message `the update failed (interrupted at ...) and was rolled back`, on the first resume only: a second apply of the same plan sends none and prints `notification not delivered yet`, a defect of `rpl/groupapply.py` found by this trial (see docs/results.md). Count messages accordingly. Repeat from "run B" (kill after `^parent: recreated`) to see a second instant. Check that after each `--resume` the three containers run their original images.
 
 ## 3. A journal that cannot be read
 
@@ -57,7 +59,7 @@ rpl inventory
 rpl notify; echo "exit $?"
 ```
 
-Expect `baseline recorded: N containers ...` and no message (first run).
+Expect `baseline recorded: N containers ...`. Without a `nightly.json` the same run also reports `The nightly run has never completed` (one message): expected, there is no nightly job in the trial state. Anything else is a finding.
 
 Now cut the channel by pointing the URL at a name that does not resolve (change the host in the trial's `rpl.json` to `hook.example.test`), then create the event during the cut:
 
@@ -77,7 +79,7 @@ Expect the first `exit 0` with the message received **once**, the second `exit 0
 
 ## 5. The timer alone, with the nightly job absent
 
-The point is that a new incident is detected by the timer and by nothing else. Confirm no nightly timer or cron entry exists for the trial (`systemctl --user list-timers`, `crontab -l`). Create the units with the account that owns the secret file, with the same `RPL_CONFIG` and `PYTHONPATH` as `env.sh`:
+The point is that a new incident is detected by the timer and by nothing else. Confirm no nightly timer or cron entry exists for the trial (`systemctl --user list-timers`, `crontab -l`). Where `systemctl --user` works (it did not as root in an LXC container: no user bus; use system units there, or `loginctl enable-linger` with `XDG_RUNTIME_DIR`, untested), create the units with the account that owns the secret file, with the same `RPL_CONFIG` and `PYTHONPATH` as `env.sh`:
 
 ```ini
 # ~/.config/systemd/user/rpl-watch.service
@@ -130,6 +132,7 @@ Remove the timer units (`systemctl --user disable --now rpl-watch.timer`), the e
 
 ## What this trial does not show
 
+- A remote webhook if yours was local; a timer under a non-root account; a user unit; a server restart with the timer active; a complete, uninterrupted apply (the duration of a normal apply was not measured);
 - A real group, a real application or a real VPN; policy `auto`; a nightly job that really runs from cron or a timer for days.
 - A webhook other than yours; Telegram; a channel that is slow or rate-limited (measured once in step 0, not stressed).
 - Two `rpl watch` or `rpl notify` runs at the same instant (`notifs.json` has no lock), retries exhausted up to `max_attempts`, and an apply that legitimately runs longer than the grace.
