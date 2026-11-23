@@ -31,7 +31,7 @@ import os
 import sys
 import time
 
-from . import config, notify
+from . import config, groupmsg, notify
 
 NIGHTLY = "nightly.json"
 KNOWN = "apps-known.json"
@@ -68,7 +68,7 @@ def _load(cfg, name):
 
 def _error(cfg, name, problem):
     stamp = notify.file_stamp(config.state(cfg, name))
-    return {"key": f"error:{name}:{stamp}", "text": f"rpl: {name} {_clean(problem)}: what it holds is not being reported until it is fixed."}
+    return {"key": f"error:{name}:{stamp}", "critical": True, "text": f"rpl: {name} {_clean(problem)}: what it holds is not being reported until it is fixed."}
 
 
 # ---- sources: each takes (cfg, now) and returns events; an Unreadable becomes an error event --------------------------
@@ -82,7 +82,7 @@ def nightly_events(cfg, now):
         raise Unreadable("has the wrong shape (expected ts and a status of ok or failed)")
     out = []
     if data["status"] == "failed":
-        out.append({"key": f"nightly-failed:{int(data['ts'])}",
+        out.append({"key": f"nightly-failed:{int(data['ts'])}", "critical": True,
                     "text": "The nightly run failed" + (": " + _clean(data["reason"]) if data.get("reason") else " (no reason recorded).")})
     late = notify.missing_run(data["ts"], now, max_h)
     if late:
@@ -102,7 +102,7 @@ def patch_events(cfg, now):
         if now - e["ts"] > window:
             continue
         svc, res = _clean(e.get("service", "?"), 80), _clean(e.get("result", "?"), 80)
-        out.append({"key": f"patch:{svc}:{int(e['ts'])}",
+        out.append({"key": f"patch:{svc}:{int(e['ts'])}", "critical": "FAILED" in res or "aborted" in res,
                     "text": f"rpl patch of {svc} ({_clean(e.get('from', '?'), 100)} -> {_clean(e.get('to', '?'), 100)}): {res}."})
     return out
 
@@ -167,7 +167,33 @@ def new_app_events(cfg, now):
             for n in names if n not in known]
 
 
-SOURCES = (("nightly.json", nightly_events), ("patches.json", patch_events), ("proposals.json", exclusion_events), ("inventory.json", new_app_events))
+def group_result_events(cfg, now):
+    """The "updated" and "rolled back" messages of the group apply, produced again from its journal with the same key and text, so one whose first
+    delivery failed is retried (the apply gives its message to `deliver` once). Entries younger than the window only. A failed rollback is `rpl
+    watch`'s (it never expires); a journal that cannot be read gives nothing here, `rpl watch` says so."""
+    try:
+        with open(config.state(cfg, "group-journal.json"), encoding="utf-8") as f:
+            entries = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(entries, list):
+        return []
+    window = 3600 * float(cfg.get("events_window_hours", DEFAULT_WINDOW_H))
+    out = []
+    for e in entries:
+        if not isinstance(e, dict) or not isinstance(e.get("plan"), dict) or not isinstance(e.get("id"), str) or not _number(e.get("ts")):
+            continue
+        outcome = {"ok": "ok", "rollback ok": "rolled-back"}.get(e.get("result"))
+        if outcome is None or now - e["ts"] > window:
+            continue
+        members = [m for m in e["plan"].get("members") or [] if isinstance(m, dict)]
+        out.append({"key": groupmsg.group_key(e["id"], outcome),
+                    "text": groupmsg.text(str(e["plan"].get("parent", "?")), outcome, str(e.get("why", "")), members)})
+    return out
+
+
+SOURCES = (("nightly.json", nightly_events), ("patches.json", patch_events), ("proposals.json", exclusion_events), ("inventory.json", new_app_events),
+           ("group-journal.json", group_result_events))
 
 
 def collect(cfg, now=time.time):

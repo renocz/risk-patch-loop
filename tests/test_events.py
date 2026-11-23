@@ -274,6 +274,43 @@ class Delivery(Base):
         self.assertTrue(self.keys())
 
 
+class Priority(Base):
+    """What must reach a human even when a slow channel has used the run's time budget is marked critical; the rest waits for the next run."""
+
+    def flags(self):
+        return {e["key"].split(":")[0]: bool(e.get("critical")) for e in events.collect(self.cfg, lambda: NOW)}
+
+    def test_a_missing_or_failed_nightly_run_is_critical(self):
+        os.remove(os.path.join(self.state, "nightly.json"))
+        self.assertEqual(self.flags(), {"nightly-missing": True})
+        self.put("nightly.json", {"ts": NOW - H, "status": "failed", "reason": "x"})
+        self.assertEqual(self.flags(), {"nightly-failed": True})
+        self.put("nightly.json", {"ts": NOW - 40 * H, "status": "ok"})                      # a record that is too old
+        self.assertEqual(self.flags(), {"nightly-missing": True})
+
+    def test_an_unreadable_state_file_is_critical(self):
+        self.put("patches.json", "{broken")
+        self.assertEqual(self.flags(), {"error": True})
+
+    def test_a_patch_that_needs_a_human_is_critical_and_one_that_worked_is_not(self):
+        self.put("patches.json", [{"ts": NOW - H, "service": "a", "from": "i:1", "to": "i:2", "result": "ok"},
+                                  {"ts": NOW - H - 1, "service": "b", "from": "i:1", "to": "i:2", "result": "rollback FAILED: CHECK BY HAND"},
+                                  {"ts": NOW - H - 2, "service": "c", "from": "i:1", "to": "i:2", "result": "aborted: CHECK BY HAND"},
+                                  {"ts": NOW - H - 3, "service": "d", "from": "i:1", "to": "i:2", "result": "rollback ok"}])
+        got = {e["key"].split(":")[1]: bool(e.get("critical")) for e in events.collect(self.cfg, lambda: NOW)}
+        self.assertEqual(got, {"a": False, "b": True, "c": True, "d": False})
+
+    def test_a_new_application_and_an_exclusion_are_not_critical(self):
+        self.inventory("app-1")
+        events.run(self.cfg, self.poster, lambda: NOW)
+        self.inventory("app-1", "app-2")
+        self.put("proposals.json", {"ts": NOW - H, "proposals": [], "not_proposed": [{"image": "img:1", "reason": "x"}]})
+        self.put("fixcheck.json", {"ts": NOW - H, "images": [{"image": "img:1", "verdict": "COMPLETE", "candidate": "2"}]})
+        evs = events.collect(self.cfg, lambda: NOW)
+        self.assertEqual(sorted(e["key"].split(":")[0] for e in evs), ["excluded", "new-app"])
+        self.assertFalse(any(e.get("critical") for e in evs))
+
+
 class Robustness(Base):
     def test_a_source_that_crashes_becomes_an_error_event_and_the_others_still_run(self):
         def boom(cfg, now):
@@ -290,9 +327,15 @@ class Command(unittest.TestCase):
         from rpl import __main__ as cli
         self.assertEqual(cli.COMMANDS["notify"], "events")
 
-    def test_the_collector_does_not_read_the_group_journal(self):
+    def test_rpl_watch_does_not_depend_on_the_collector_or_the_group_apply(self):
+        import ast
         import inspect
-        self.assertNotIn("group-journal", inspect.getsource(events))        # that check belongs to `rpl watch`, which must stand alone
+        from rpl import watch
+        imported = set()
+        for node in ast.walk(ast.parse(inspect.getsource(watch))):
+            if isinstance(node, ast.ImportFrom) and node.level:
+                imported |= {a.name for a in node.names}
+        self.assertEqual(imported & {"events", "groupapply", "patch"}, set())          # it must stand alone: config, notify and the message module only
 
 
 if __name__ == "__main__":
