@@ -217,6 +217,12 @@ Fix of the defect named above ("Defect found by this trial, in the group apply")
 - **Rules removed in turn, on a copy:** the three keys back to the plan fingerprint, the "given up" branch, the "queued" branch silent, and the old "anything not delivered is queued" rule: 6 of 6 removals failed at least one test (the `ok` key is guarded by one format test only).
 - **Not verified:** a real `rpl group` on a real host with a real channel (the delivery is the real `notify.deliver` and its `notifs.json`, the channel is a double); an existing `notifs.json` upgraded in place (old keys are never matched again, by reading the code, not by a test).
 
+### Lock around notifs.json (23 November 2026)
+
+Same second opinion as above (a model council, 4 of 4 members "correct first" on the failed-rollback alert; 3 of 4 named the concurrency of `notifs.json` as a blocker). Read in the code: `deliver` loaded the file once and wrote it whole at the end, so two overlapping runs could erase each other's marks. Tests first: a test where a second `deliver` runs while the first is sending (it failed: the second run's delivered mark was gone), the same with two failures, a lock that cannot be taken must not stop an alert, the lock file is owner-only, a state update waits for a lock held by another thread (removing the `flock` call makes it fail). Then the code: per-event read, per-key write under `flock`. Suite 509 on Python 3.11, 3.12 and 3.13.
+
+**Not verified:** two real processes (the overlap is simulated by a second `deliver` called from inside the first one's send, and the wait by a thread); NFS or another file system; macOS; a lock holder that never lets go (the write then goes on after 5 s without the lock); two runs sending the same event at the same instant (still possible by design).
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.

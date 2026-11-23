@@ -11,6 +11,9 @@ Rules, each covered by a test:
     `max_attempts`, and the state is visible in notifs.json (tries, last error);
   - a failed event is retried after 30 s, then 60 s, doubling up to one hour (`next_try` in notifs.json), counted in elapsed time: a run that finds
     the event still waiting leaves it queued and does not count a try, so a timer every minute does not use up `max_attempts` in twenty minutes;
+  - notifs.json is written by several processes (`rpl watch`, `rpl notify`, the group apply): each event's state is written alone, under a lock
+    on notifs.json.lock, after reading the file again, so one run never erases what another recorded; if the lock cannot be taken within
+    LOCK_WAIT_S the write goes on without it (a possible duplicate message, never a lost mark or a stopped alert);
   - one message per event key (the key carries the version, e.g. "fix:app-1:CVE-2026-0001:2.4.1");
   - secrets are read from files that must not be readable by group or others, and are never printed, logged or put in the state file;
   - the webhook resolves the host ONCE, refuses private, loopback and link-local addresses (unless allow_private), connects to the
@@ -20,6 +23,7 @@ Limits, written down: how long 20 tries last depends on how often the caller run
 (`missing_run`) the caller runs from a timer that does not depend on the nightly job. A channel that succeeded is not remembered separately:
 when one of two channels fails, the event is sent again to both on the next try.
 """
+import contextlib
 import http.client
 import ipaddress
 import json
@@ -29,11 +33,17 @@ import ssl
 import time
 from urllib.parse import urlsplit
 
+try:
+    import fcntl
+except ImportError:                    # not a Unix system: no lock, see _locked
+    fcntl = None
+
 from . import config
 
 DEFAULT_MAX_ATTEMPTS = 20
 RETRY_BASE_S = 30                    # wait after the first failure; doubles with each one
 RETRY_CAP_S = 3600                   # never wait longer than this between two tries
+LOCK_WAIT_S = 5.0                    # how long a state update waits for the lock before it goes on without it
 
 
 class NotifyError(Exception):
@@ -118,17 +128,56 @@ def _load(path):
         return {}
 
 
+@contextlib.contextmanager
+def _locked(lock_path):
+    """An exclusive lock on `lock_path` while the block runs. If it cannot be taken within LOCK_WAIT_S (another process stuck, no flock, an
+    unwritable directory) the block runs without it: a lock must never stop an alert, and a possible duplicate is better than a lost mark."""
+    fd = None
+    try:
+        if fcntl is not None:
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            end = time.monotonic() + LOCK_WAIT_S
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= end:
+                        break
+                    time.sleep(0.05)
+    except OSError:
+        pass
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)                                  # closing the descriptor releases the lock
+
+
+def _commit(path, key, st):
+    """Record the state of ONE key. The file is read again under the lock and only this key is replaced, so what another process recorded in
+    the meantime (a delivery mark, a queued event) is kept. The sends themselves are outside the lock."""
+    with _locked(path + ".lock"):
+        state = _load(path)
+        state[key] = st
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False)
+        os.replace(tmp, path)
+
+
 def deliver(events, cfg, poster=post, now=time.time):
     """events: [{"key": str, "text": str}]. Returns {"delivered": [...], "queued": [...], "given_up": [...]}; state in notifs.json."""
     notif = cfg.get("notifications") or {}
     channels = notif.get("channels") or []
     cap = int(notif.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
     path = config.state(cfg, "notifs.json")
-    state = _load(path)
     out = {"delivered": [], "queued": [], "given_up": []}
     for ev in events:
         key = ev["key"]
-        st = state.setdefault(key, {"delivered": False, "tries": 0})
+        st = _load(path).get(key)                         # read again for each event: another process may have recorded it meanwhile
+        if not isinstance(st, dict) or "tries" not in st or "delivered" not in st:
+            st = {"delivered": False, "tries": 0}
         if st["delivered"]:
             continue                                      # one message per key
         if st["tries"] >= cap:
@@ -165,10 +214,7 @@ def deliver(events, cfg, poster=post, now=time.time):
             st.pop("last_error", None)
             st.pop("next_try", None)
             out["delivered"].append(key)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False)
-    os.replace(tmp, path)
+        _commit(path, key, st)
     return out
 
 
