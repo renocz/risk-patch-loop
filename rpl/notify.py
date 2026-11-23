@@ -20,8 +20,9 @@ Rules, each covered by a test:
     address it checked, and does not follow redirects.
 Limits, written down: how long 20 tries last depends on how often the caller runs (about 13 h at one run per minute, about 20 h at one per hour); the delay does not read a `Retry-After` header; a channel that hangs holds a run for the 15 s timeout, per channel and per event;
 "delivered" means the receiving service answered 2xx, not that a person read it. The nightly-run check is a function
-(`missing_run`) the caller runs from a timer that does not depend on the nightly job. A channel that succeeded is not remembered separately:
-when one of two channels fails, the event is sent again to both on the next try.
+(`missing_run`) the caller runs from a timer that does not depend on the nightly job. A channel that confirmed an event is remembered
+(`sent` in notifs.json: a short hash of the channel's type and target, never the URL): when one of two channels fails, only the failed one is
+retried. A channel that confirmed and then failed to be recorded (a crash between the two) can be sent the event twice.
 """
 import contextlib
 import hashlib
@@ -120,6 +121,13 @@ def send_webhook(ch, text, poster):
 CHANNELS = {"telegram": send_telegram, "webhook": send_webhook}
 
 
+def channel_id(ch):
+    """A stable short identifier of a channel (its type and target), so the state file can say which channels confirmed an event without naming
+    a URL or a chat: a hash, never the target itself (a webhook URL often carries its token)."""
+    target = ch.get("url") or ch.get("chat_id") or ""
+    return hashlib.sha256(json.dumps([ch.get("type"), str(target)]).encode("utf-8")).hexdigest()[:12]
+
+
 def _load(path):
     try:
         with open(path, encoding="utf-8") as f:
@@ -199,7 +207,11 @@ def deliver(events, cfg, poster=post, now=time.time):
         errors = []
         if not channels:
             errors.append("no channel configured")
+        sent = list(st.get("sent") or [])                     # channels that already confirmed this event: not sent it again
         for ch in channels:
+            cid = channel_id(ch)
+            if cid in sent:
+                continue
             fn = CHANNELS.get(ch.get("type"))
             try:
                 if fn is None:
@@ -207,16 +219,19 @@ def deliver(events, cfg, poster=post, now=time.time):
                 status = fn(ch, ev["text"], poster)
                 if not (200 <= int(status) < 300):
                     raise NotifyError("HTTP " + str(status))
+                sent.append(cid)
             except NotifyError as e:
                 errors.append(f"{ch.get('type')}: {e}")
             except Exception as e:                        # a network error text may carry a URL with a token: keep only its type
                 errors.append(f"{ch.get('type')}: {type(e).__name__}")
         if errors:
+            st["sent"] = sent
             st["last_error"] = "; ".join(errors)
             st["next_try"] = t + min(RETRY_BASE_S * 2 ** (st["tries"] - 1), RETRY_CAP_S)
             out["queued"].append(key)
         else:
             st["delivered"] = True
+            st.pop("sent", None)
             st.pop("last_error", None)
             st.pop("next_try", None)
             out["delivered"].append(key)

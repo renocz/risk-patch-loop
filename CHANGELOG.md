@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Notifications: a channel that confirmed an event is not sent it again
+- `rpl/notify.py`: with two channels, one failing, the event was sent again to both on every retry, so the healthy channel received it up to `max_attempts` times. `notifs.json` now records which channels confirmed it (`sent`: a short hash of each channel's type and target, never a URL or a chat, since a webhook URL often carries its token) and only the others are retried; the list is dropped when the event is delivered. A channel added to the configuration later still gets the event.
+- 6 new tests (`PerChannel`), 4 failing or erroring before; of 5 removals of its rules, 5 fail a test. A crash between a send and the write of its record can still send an event twice to that channel. Not run against two real channels.
+
 ### Notifications: notifs.json is owner-only
 - `notifs.json` was created with the caller's umask (0644 under the common 022); only `notifs.json.lock` was forced to 0600. It holds container and image names and the last error of each channel. It is now written 0600 (`os.open` with 0600 and `fchmod`, so a leftover temporary file with loose rights does not leak into it), and an existing world-readable one is tightened at its next write. Found by the replay of #19 and #20 on the host.
 - 3 new tests, 3 failing before; suite 529, Python 3.11, 3.12, 3.13. Of 2 removals of its rules, 1 fails a test and 1 survives (an equivalent mutant: `fchmod` restores 0600 anyway). The replay on the host of #19 and #20 is recorded in `docs/results.md`: failed rollback re-presented once and closed when the backup was deleted, no mark lost over 400 concurrent turns, a held lock does not stop an alert (5.1 s).
