@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Notifications: notifs.json is owner-only
+- `notifs.json` was created with the caller's umask (0644 under the common 022); only `notifs.json.lock` was forced to 0600. It holds container and image names and the last error of each channel. It is now written 0600 (`os.open` with 0600 and `fchmod`, so a leftover temporary file with loose rights does not leak into it), and an existing world-readable one is tightened at its next write. Found by the replay of #19 and #20 on the host.
+- 3 new tests, 3 failing before; suite 529, Python 3.11, 3.12, 3.13. Of 2 removals of its rules, 1 fails a test and 1 survives (an equivalent mutant: `fchmod` restores 0600 anyway). The replay on the host of #19 and #20 is recorded in `docs/results.md`: failed rollback re-presented once and closed when the backup was deleted, no mark lost over 400 concurrent turns, a held lock does not stop an alert (5.1 s).
+- Not changed, written down: a queued message whose event disappears is never retried (intended for a resolved condition; also the known gap for the group apply's "updated" and "rolled back" messages).
+
 ### Notifications: the key of an "unreadable" message follows the content
 - The key of the "group journal unreadable" message (`rpl watch`) and of the "error" events (`rpl notify`) was the modification second of the file, so two different damaged files within the same second sent one message (seen on the host with `{"result": null}` then `["x"]`). It is now a stamp of the file's content (`notify.file_stamp`: a short hash of the first MiB; the modification time in nanoseconds if the file cannot be read; "unknown" if missing). A file that stays damaged in the same way is still told once.
 - 5 new tests (watch, events, notify), 5 failing or erroring before; suite 526, Python 3.11, 3.12, 3.13; 5 of 5 removals of its rules fail a test. The replay on the host of #15, #17 and #18 is recorded in `docs/results.md`.
