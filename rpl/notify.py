@@ -24,6 +24,7 @@ Limits, written down: how long 20 tries last depends on how often the caller run
 when one of two channels fails, the event is sent again to both on the next try.
 """
 import contextlib
+import hashlib
 import http.client
 import ipaddress
 import json
@@ -216,6 +217,19 @@ def deliver(events, cfg, poster=post, now=time.time):
             out["delivered"].append(key)
         _commit(path, key, st)
     return out
+
+
+def file_stamp(path):
+    """A short stamp of a file's CONTENT, for a notification key that must change when the file changes (a damaged file that is damaged in another
+    way is another message). A file that cannot be read gets its modification time in nanoseconds; one that does not exist, "unknown"."""
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read(1 << 20)).hexdigest()[:12]
+    except OSError:
+        try:
+            return str(os.stat(path).st_mtime_ns)
+        except OSError:
+            return "unknown"
 
 
 def missing_run(last_run_ts, now_ts, max_hours=36):

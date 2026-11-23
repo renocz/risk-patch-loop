@@ -67,10 +67,7 @@ def _load(cfg, name):
 
 
 def _error(cfg, name, problem):
-    try:
-        stamp = int(os.stat(config.state(cfg, name)).st_mtime)
-    except OSError:
-        stamp = "unknown"
+    stamp = notify.file_stamp(config.state(cfg, name))
     return {"key": f"error:{name}:{stamp}", "text": f"rpl: {name} {_clean(problem)}: what it holds is not being reported until it is fixed."}
 
 
