@@ -440,7 +440,10 @@ def _tell(cfg, key, text):
         return
     try:
         out = notify.deliver([{"key": key, "text": text}], cfg)
-        if key not in out["delivered"]:
+        # `deliver` leaves a key it already delivered out of every list: that is not "queued"
+        if key in out["given_up"]:
+            print("notification given up after repeated failures (see notifs.json)")
+        elif key in out["queued"]:
             print("notification not delivered yet (queued, see notifs.json)")
     except Exception as e:
         print("notification could not be sent: " + type(e).__name__)
@@ -550,17 +553,19 @@ def _rollback(entry, cfg, host):
 
 def _finish_rollback(entry, cfg, host, why):
     problems = _rollback(entry, cfg, host)
-    parent, fp = entry["plan"]["parent"], entry["plan"]["fingerprint"]
+    parent = entry["plan"]["parent"]
+    # The keys name THIS apply (its journal entry), not the plan: `notify.deliver` sends one message per key for ever, and the same plan
+    # is applied again after every interruption and `--resume`. A key built from the plan alone made the second failure silent.
     if problems:
         for p in problems:
             print("  " + p)
         print("ROLLBACK FAILED: CHECK BY HAND (backup kept in " + entry["backup_root"] + ")")
         _record(cfg, entry, result="rollback FAILED: CHECK BY HAND", problems=problems, why=why)
-        _tell(cfg, f"group:{parent}:{fp}:rollback-failed", f"rpl: group {parent}: the update failed ({why}) AND the rollback failed. Check by hand.")
+        _tell(cfg, f"group:{entry['id']}:rollback-failed", f"rpl: group {parent}: the update failed ({why}) AND the rollback failed. Check by hand.")
         return 4
     print("rollback ok: every member runs its original image again, configuration restored, controls passed")
     _record(cfg, entry, result="rollback ok", why=why)
-    _tell(cfg, f"group:{parent}:{fp}:rolled-back", f"rpl: group {parent}: the update failed ({why}) and was rolled back.")
+    _tell(cfg, f"group:{entry['id']}:rolled-back", f"rpl: group {parent}: the update failed ({why}) and was rolled back.")
     return 2
 
 
@@ -630,7 +635,7 @@ def _apply(a, cfg, host):
         if why is None:
             _record(cfg, entry, result="ok")
             print("OK")
-            _tell(cfg, f"group:{plan['parent']}:{plan['fingerprint']}:ok", f"rpl: group {plan['parent']} updated: "
+            _tell(cfg, f"group:{entry['id']}:ok", f"rpl: group {plan['parent']} updated: "
                   + ", ".join(f"{m['service']} -> {m['to']}" for m in plan["members"] if m["to"]))
             return 0
         print("FAILED: " + why + ": ROLLBACK")
