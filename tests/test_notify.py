@@ -378,6 +378,139 @@ class FileStamp(Base):
             self.assertRegex(notify.file_stamp(path), r"^\d+$")             # falls back to the modification time in nanoseconds
 
 
+class RetryAfter(Base):
+    """A 429 or 503 that says when to come back: the next try is not earlier than that (never later than the ceiling)."""
+
+    def server(self, status, headers):
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                self.send_response(status)
+                for k, v in headers.items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        srv = HTTPServer(("127.0.0.1", 0), H)
+        t = threading.Thread(target=srv.serve_forever, daemon=True)
+        t.start()
+        self.addCleanup(lambda: (srv.shutdown(), srv.server_close(), t.join(5)))
+        return f"http://hooks.example.test:{srv.server_address[1]}/p"
+
+    def post(self, status, headers):
+        return notify.post(self.server(status, headers), b"{}", {}, allow_private=True, resolver=lambda h, p: ["127.0.0.1"])
+
+    def test_post_returns_the_status_with_the_retry_after_seconds(self):
+        res = self.post(429, {"Retry-After": "120"})
+        self.assertEqual(res, 429)
+        self.assertEqual(res.retry_after, 120)
+
+    def test_a_date_or_garbage_or_nothing_gives_no_hint(self):
+        for headers in ({"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}, {"Retry-After": "soon"}, {"Retry-After": "-5"}, {}):
+            with self.subTest(headers=headers):
+                self.assertIsNone(self.post(503, headers).retry_after)
+
+    def test_a_success_keeps_working_as_a_plain_status(self):
+        self.assertEqual(self.post(200, {}), 200)
+
+    def deliver_with(self, *statuses, cfg_extra=None):
+        channels = [{"type": "webhook", "url": f"https://h{i}.example.test/x"} for i in range(len(statuses))]
+        answers = {c["url"]: st for c, st in zip(channels, statuses)}
+        cfg = self.cfg(channels)
+        notify.deliver([EV], cfg, lambda url, body, headers, allow: answers[url], lambda: 1000.0)
+        return self.state(cfg)[EV["key"]]
+
+    def status(self, code, retry_after):
+        s = notify.Status(code)
+        s.retry_after = retry_after
+        return s
+
+    def test_a_longer_retry_after_than_the_calendar_wins(self):
+        self.assertEqual(self.deliver_with(self.status(429, 300))["next_try"], 1000.0 + 300)
+
+    def test_a_shorter_one_does_not_shorten_the_calendar(self):
+        self.assertEqual(self.deliver_with(self.status(429, 5))["next_try"], 1000.0 + notify.RETRY_BASE_S)
+
+    def test_an_absurd_one_is_capped_at_the_ceiling(self):
+        self.assertEqual(self.deliver_with(self.status(503, 10 ** 9))["next_try"], 1000.0 + notify.RETRY_CAP_S)
+
+    def test_with_two_failing_channels_the_longest_hint_counts(self):
+        self.assertEqual(self.deliver_with(self.status(429, 200), self.status(429, 100))["next_try"], 1000.0 + 200)     # the longer one is first: the last one must not win
+
+    def test_a_channel_that_succeeded_does_not_set_the_wait(self):
+        st = self.deliver_with(self.status(200, 900), self.status(500, None))
+        self.assertEqual(st["next_try"], 1000.0 + notify.RETRY_BASE_S)
+
+    def test_a_plain_integer_status_still_works(self):
+        self.assertEqual(self.deliver_with(500)["next_try"], 1000.0 + notify.RETRY_BASE_S)
+
+
+class Timeouts(Base):
+    n = 0
+
+    def calls(self, channel):
+        seen = []
+        Timeouts.n += 1                                                      # a new key each time: one message per key, also across subtests
+        notify.deliver([dict(EV, key=f"k{Timeouts.n}")], self.cfg([channel]), lambda *a, **kw: seen.append(kw) or 200)
+        return seen
+
+    def test_without_a_setting_the_poster_is_called_as_before(self):
+        self.assertEqual(self.calls({"type": "webhook", "url": "https://h.example.test/x"}), [{}])
+
+    def test_a_channel_timeout_is_passed_to_the_poster(self):
+        self.assertEqual(self.calls({"type": "webhook", "url": "https://h.example.test/x", "timeout_s": 3}), [{"timeout": 3.0}])
+
+    def test_telegram_gets_it_too(self):
+        secret = self.secret("tg.token")
+        got = self.calls({"type": "telegram", "token_file": secret, "chat_id": "1", "timeout_s": 4})
+        self.assertEqual(got, [{"timeout": 4.0}])
+
+    def test_a_silly_value_is_ignored_or_clamped(self):
+        for value, expected in (("abc", {}), (-1, {}), (0, {}), (True, {}), (1000, {"timeout": 60.0})):
+            with self.subTest(value=value):
+                self.assertEqual(self.calls({"type": "webhook", "url": "https://h.example.test/x", "timeout_s": value}), [expected])
+
+
+class RunBudget(Base):
+    """A run must not outlast its timer: when the time spent sending reaches the budget, the remaining events wait for the next run."""
+
+    def setUp(self):
+        super().setUp()
+        self.clock = [1000.0]
+        self.sent = []
+
+        def poster(url, body, headers, allow, **kw):
+            self.sent.append(json.loads(body)["text"])
+            self.clock[0] += 20                                              # a slow channel
+            return 200
+        self.poster = poster
+
+    def run_(self, n, **notif):
+        events = [dict(EV, key=f"k{i}", text=f"t{i}") for i in range(n)]
+        cfg = self.cfg([{"type": "webhook", "url": "https://h.example.test/x"}], **notif)
+        return notify.deliver(events, cfg, self.poster, lambda: self.clock[0])
+
+    def test_events_after_the_budget_wait_for_the_next_run(self):
+        res = self.run_(4, run_budget_s=30)
+        self.assertEqual(self.sent, ["t0", "t1"])
+        self.assertEqual((res["delivered"], res["queued"]), (["k0", "k1"], ["k2", "k3"]))
+
+    def test_a_held_event_is_not_a_try_and_goes_next_time(self):
+        self.run_(4, run_budget_s=30)
+        res = self.run_(4, run_budget_s=30)
+        self.assertEqual(self.sent, ["t0", "t1", "t2", "t3"])
+        self.assertEqual(res["delivered"], ["k2", "k3"])
+
+    def test_the_default_budget_is_under_a_minute(self):
+        self.assertLess(notify.RUN_BUDGET_S, 60)
+
+    def test_no_budget_problem_when_sends_are_fast(self):
+        self.poster = lambda url, body, headers, allow, **kw: 200
+        self.assertEqual(len(self.run_(10)["delivered"]), 10)
+
+
 class NightlyMissing(unittest.TestCase):
     def test_recent_run_gives_nothing(self):
         self.assertIsNone(notify.missing_run(1000.0, 1000.0 + 3600 * 20))

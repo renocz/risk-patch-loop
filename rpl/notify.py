@@ -4,7 +4,8 @@ Config (rpl.json):
     "notifications": {"channels": [
         {"type": "telegram", "token_file": "~/.rpl/tg.token", "chat_id": "123"},
         {"type": "webhook", "url": "https://hooks.example.test/x", "secret_file": "~/.rpl/hook.secret", "allow_private": false}],
-     "max_attempts": 20}
+     "max_attempts": 20, "run_budget_s": 45}
+    (a channel may also set "timeout_s", seconds for one send, default 15, at most 60)
 
 Rules, each covered by a test:
   - an event is marked delivered only when EVERY channel confirmed it (HTTP 2xx); otherwise it stays queued and is retried, up to
@@ -14,11 +15,12 @@ Rules, each covered by a test:
   - notifs.json is written by several processes (`rpl watch`, `rpl notify`, the group apply): each event's state is written alone, under a lock
     on notifs.json.lock, after reading the file again, so one run never erases what another recorded; if the lock cannot be taken within
     LOCK_WAIT_S the write goes on without it (a possible duplicate message, never a lost mark or a stopped alert);
+  - a `Retry-After` of a failed event lengthens its wait when it is longer than the calendar, never past one hour; the longest of the failing channels counts;
   - one message per event key (the key carries the version, e.g. "fix:app-1:CVE-2026-0001:2.4.1");
   - secrets are read from files that must not be readable by group or others, and are never printed, logged or put in the state file;
   - the webhook resolves the host ONCE, refuses private, loopback and link-local addresses (unless allow_private), connects to the
     address it checked, and does not follow redirects.
-Limits, written down: how long 20 tries last depends on how often the caller runs (about 13 h at one run per minute, about 20 h at one per hour); the delay does not read a `Retry-After` header; a channel that hangs holds a run for the 15 s timeout, per channel and per event;
+Limits, written down: how long 20 tries last depends on how often the caller runs (about 13 h at one run per minute, about 20 h at one per hour); a `Retry-After` given as a date (not as seconds) is ignored; a channel that hangs holds a run for its timeout (15 s, `timeout_s` per channel, 60 at most) and a run stops starting new sends after `run_budget_s` (45 s), so the events left wait for the next run;
 "delivered" means the receiving service answered 2xx, not that a person read it. The nightly-run check is a function
 (`missing_run`) the caller runs from a timer that does not depend on the nightly job. A channel that succeeded is not remembered separately:
 when one of two channels fails, the event is sent again to both on the next try.
@@ -44,11 +46,26 @@ from . import config
 DEFAULT_MAX_ATTEMPTS = 20
 RETRY_BASE_S = 30                    # wait after the first failure; doubles with each one
 RETRY_CAP_S = 3600                   # never wait longer than this between two tries
+RUN_BUDGET_S = 45                    # a run stops starting new sends after this long, so it does not outlast a one-minute timer
 LOCK_WAIT_S = 5.0                    # how long a state update waits for the lock before it goes on without it
 
 
 class NotifyError(Exception):
     pass
+
+
+class Status(int):
+    """An HTTP status that may carry the number of seconds a `Retry-After` header asked to wait (None when absent or not a number of seconds).
+    It is an int, so a poster that returns a plain status keeps working."""
+    retry_after = None
+
+
+def _timeout_kw(ch):
+    """The per-channel `timeout_s` as a keyword for the poster: nothing when unset or silly (a bool, zero, negative, not a number), 60 at most."""
+    v = ch.get("timeout_s")
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+        return {}
+    return {"timeout": float(min(v, 60))}
 
 
 def read_secret(path):
@@ -99,7 +116,12 @@ def post(url, body, headers, allow_private=False, resolver=resolve, timeout=15):
         conn = http.client.HTTPConnection(u.hostname, port, timeout=timeout)
         conn.sock = raw
         conn.request("POST", (u.path or "/") + ("?" + u.query if u.query else ""), body, dict(headers, Host=u.netloc))
-        return conn.getresponse().status
+        resp = conn.getresponse()
+        status = Status(resp.status)
+        hint = (resp.getheader("Retry-After") or "").strip()
+        if hint.isdigit():
+            status.retry_after = int(hint)
+        return status
     finally:
         raw.close()
 
@@ -107,14 +129,14 @@ def post(url, body, headers, allow_private=False, resolver=resolve, timeout=15):
 def send_telegram(ch, text, poster):
     token = read_secret(ch["token_file"])
     return poster("https://api.telegram.org/bot" + token + "/sendMessage", json.dumps({"chat_id": ch["chat_id"], "text": text}).encode(),
-                  {"Content-Type": "application/json"}, False)
+                  {"Content-Type": "application/json"}, False, **_timeout_kw(ch))
 
 
 def send_webhook(ch, text, poster):
     headers = {"Content-Type": "application/json"}
     if ch.get("secret_file"):
         headers["Authorization"] = "Bearer " + read_secret(ch["secret_file"])
-    return poster(ch["url"], json.dumps({"text": text}).encode(), headers, bool(ch.get("allow_private")))
+    return poster(ch["url"], json.dumps({"text": text}).encode(), headers, bool(ch.get("allow_private")), **_timeout_kw(ch))
 
 
 CHANNELS = {"telegram": send_telegram, "webhook": send_webhook}
@@ -178,6 +200,8 @@ def deliver(events, cfg, poster=post, now=time.time):
     channels = notif.get("channels") or []
     cap = int(notif.get("max_attempts") or DEFAULT_MAX_ATTEMPTS)
     path = config.state(cfg, "notifs.json")
+    budget = float(notif.get("run_budget_s") or RUN_BUDGET_S)
+    started = now()
     out = {"delivered": [], "queued": [], "given_up": []}
     for ev in events:
         key = ev["key"]
@@ -194,9 +218,13 @@ def deliver(events, cfg, poster=post, now=time.time):
         if st["tries"] and isinstance(due, (int, float)) and t < due <= t + RETRY_CAP_S:
             out["queued"].append(key)                         # waiting for its delay: not a try (a time further ahead than the cap is not trusted)
             continue
+        if t - started >= budget:
+            out["queued"].append(key)                         # this run has used its time: the event waits for the next one, not a try
+            continue
         st["tries"] += 1
         st["last_try"] = t
         errors = []
+        hint = 0
         if not channels:
             errors.append("no channel configured")
         for ch in channels:
@@ -206,6 +234,9 @@ def deliver(events, cfg, poster=post, now=time.time):
                     raise NotifyError("unknown channel type " + repr(ch.get("type")))
                 status = fn(ch, ev["text"], poster)
                 if not (200 <= int(status) < 300):
+                    asked = getattr(status, "retry_after", None)
+                    if isinstance(asked, (int, float)) and not isinstance(asked, bool) and asked > 0:
+                        hint = max(hint, asked)
                     raise NotifyError("HTTP " + str(status))
             except NotifyError as e:
                 errors.append(f"{ch.get('type')}: {e}")
@@ -213,7 +244,8 @@ def deliver(events, cfg, poster=post, now=time.time):
                 errors.append(f"{ch.get('type')}: {type(e).__name__}")
         if errors:
             st["last_error"] = "; ".join(errors)
-            st["next_try"] = t + min(RETRY_BASE_S * 2 ** (st["tries"] - 1), RETRY_CAP_S)
+            wait = min(RETRY_BASE_S * 2 ** (st["tries"] - 1), RETRY_CAP_S)
+            st["next_try"] = t + max(wait, min(hint, RETRY_CAP_S))             # a Retry-After can lengthen the wait, never past the ceiling
             out["queued"].append(key)
         else:
             st["delivered"] = True
