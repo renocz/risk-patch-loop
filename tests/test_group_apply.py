@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest import mock
 
-from rpl import config, gate, group, groupapply
+from rpl import config, events, gate, group, groupapply, notify
 
 from .fake_group import GroupHost
 from .fakes import rpl_config, write_compose_text
@@ -941,6 +941,82 @@ class UnfinishedEntryIncomplete(GroupCase):
 
     def test_a_complete_entry_is_still_resumed(self):
         self.assertEqual(groupapply._resume_problem(self.good()), None)
+class RetriedByTheCollector(GroupCase):
+    """The group apply gives its "updated" and "rolled back" messages to `deliver` once. `rpl notify` produces them again from the journal, with
+    the same key and the same text, so a message whose first delivery failed is retried and one that arrived is not sent twice."""
+
+    def setUp(self):
+        super().setUp()
+        self.configure(notifications={"channels": [{"type": "webhook", "url": "https://hooks.example.test/x"}]})
+        self.sent, self.code = [], 200
+        channel = mock.patch.dict(groupapply.notify.CHANNELS, {"webhook": lambda ch, text, poster: self.sent.append(text) or self.code})
+        channel.start()
+        self.addCleanup(channel.stop)
+
+    def notifs(self):
+        with open(os.path.join(self.cfg["state_dir"], "notifs.json")) as f:
+            return json.load(f)
+
+    def later(self):
+        return self.journal()[-1]["ts"] + notify.RETRY_CAP_S + 60
+
+    def collect(self):
+        return events.group_result_events(self.cfg, self.journal()[-1]["ts"] + 60)
+
+    def run_collector(self, at):
+        events.record(self.cfg, "ok", "", lambda: at)                         # a recent nightly record: otherwise `rpl notify` also reports that
+        with contextlib.redirect_stdout(io.StringIO()):
+            return events.run(self.cfg, None, lambda: at)
+
+    def test_the_success_message_is_reproduced_with_the_same_key_and_text(self):
+        self.assertEqual(self.run_group()[0], 0)
+        (key,) = self.notifs()
+        self.assertEqual(self.collect(), [{"key": key, "text": self.sent[0]}])
+
+    def test_the_rollback_message_is_reproduced_with_the_same_key_and_text(self):
+        self.host.fail_up_images.add(NEW_TUNNEL)
+        self.assertEqual(self.run_group()[0], 2)
+        (key,) = self.notifs()
+        self.assertEqual(self.collect(), [{"key": key, "text": self.sent[0]}])
+
+    def test_a_message_whose_first_delivery_failed_is_sent_by_the_collector_once(self):
+        self.code = 500
+        self.host.fail_up_images.add(NEW_TUNNEL)
+        self.run_group()
+        self.assertEqual(len(self.sent), 1)
+        self.code = 200
+        self.run_collector(self.later())
+        self.run_collector(self.later() + 10)
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(self.sent[1], self.sent[0])
+
+    def test_a_message_that_arrived_is_not_sent_again(self):
+        self.run_group()
+        self.run_collector(self.later())
+        self.assertEqual(len(self.sent), 1)
+
+    def test_a_result_older_than_the_window_is_not_replayed(self):
+        self.run_group()
+        self.assertEqual(events.group_result_events(self.cfg, self.journal()[-1]["ts"] + 73 * 3600), [])
+
+    def test_a_failed_rollback_is_left_to_rpl_watch(self):
+        entry = {"id": "a", "ts": 1000.0, "result": "rollback FAILED: CHECK BY HAND", "why": "x", "plan": {"parent": "p", "members": []}}
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL), json.dumps([entry]))
+        self.assertEqual(events.group_result_events(self.cfg, 1100.0), [])
+
+    def test_a_journal_that_cannot_be_read_gives_nothing_and_does_not_raise(self):
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        for text in ("{broken", '{"result": null}', '["x"]', "[null]"):
+            self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL), text)
+            self.assertEqual(events.group_result_events(self.cfg, 1100.0), [])      # `rpl watch` is the one that says it
+
+    def test_an_entry_without_an_id_or_a_plan_is_skipped(self):
+        good = {"id": "g", "ts": 1000.0, "result": "ok", "plan": {"parent": "p", "members": [{"service": "s", "to": "img:2"}]}}
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL),
+                   json.dumps([{"ts": 1000.0, "result": "ok", "plan": {"parent": "p"}}, {"id": "n", "ts": 1000.0, "result": "ok"}, good]))
+        self.assertEqual([e["key"] for e in events.group_result_events(self.cfg, 1100.0)], ["group:g:ok"])
 
 
 class TreeCopy(unittest.TestCase):

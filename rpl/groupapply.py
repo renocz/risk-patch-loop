@@ -58,7 +58,7 @@ import stat
 import sys
 import time
 
-from . import config, controls, gate, groups, notify, patch, watch
+from . import config, controls, gate, groupmsg, groups, notify, patch
 
 JOURNAL = "group-journal.json"
 QUIESCE = ("stop", "none")
@@ -578,11 +578,11 @@ def _finish_rollback(entry, cfg, host, why):
             print("  " + p)
         print("ROLLBACK FAILED: CHECK BY HAND (backup kept in " + entry["backup_root"] + ")")
         _record(cfg, entry, result="rollback FAILED: CHECK BY HAND", problems=problems, why=why)
-        _tell(cfg, watch.group_key(entry["id"], "rollback-failed"), f"rpl: group {parent}: the update failed ({why}) AND the rollback failed. Check by hand.")
+        _tell(cfg, groupmsg.group_key(entry["id"], "rollback-failed"), groupmsg.text(parent, "rollback-failed", why))
         return 4
     print("rollback ok: every member runs its original image again, configuration restored, controls passed")
     _record(cfg, entry, result="rollback ok", why=why)
-    _tell(cfg, watch.group_key(entry["id"], "rolled-back"), f"rpl: group {parent}: the update failed ({why}) and was rolled back.")
+    _tell(cfg, groupmsg.group_key(entry["id"], "rolled-back"), groupmsg.text(parent, "rolled-back", why))
     return 2
 
 
@@ -652,8 +652,7 @@ def _apply(a, cfg, host):
         if why is None:
             _record(cfg, entry, result="ok")
             print("OK")
-            _tell(cfg, watch.group_key(entry["id"], "ok"), f"rpl: group {plan['parent']} updated: "
-                  + ", ".join(f"{m['service']} -> {m['to']}" for m in plan["members"] if m["to"]))
+            _tell(cfg, groupmsg.group_key(entry["id"], "ok"), groupmsg.text(plan["parent"], "ok", members=plan["members"]))
             return 0
         print("FAILED: " + why + ": ROLLBACK")
         return _finish_rollback(entry, cfg, host, why)

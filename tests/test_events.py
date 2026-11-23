@@ -290,9 +290,15 @@ class Command(unittest.TestCase):
         from rpl import __main__ as cli
         self.assertEqual(cli.COMMANDS["notify"], "events")
 
-    def test_the_collector_does_not_read_the_group_journal(self):
+    def test_rpl_watch_does_not_depend_on_the_collector_or_the_group_apply(self):
+        import ast
         import inspect
-        self.assertNotIn("group-journal", inspect.getsource(events))        # that check belongs to `rpl watch`, which must stand alone
+        from rpl import watch
+        imported = set()
+        for node in ast.walk(ast.parse(inspect.getsource(watch))):
+            if isinstance(node, ast.ImportFrom) and node.level:
+                imported |= {a.name for a in node.names}
+        self.assertEqual(imported & {"events", "groupapply", "patch"}, set())          # it must stand alone: config, notify and the message module only
 
 
 if __name__ == "__main__":

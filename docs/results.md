@@ -258,6 +258,11 @@ Same host and tooling as the replay above, root, a fresh disposable trial group,
 Two items the review of #18 and #20 left open: the journal kept 100 entries whatever they were, and `--resume` indexed fields of the entry without checking them (noted in #18). Tests first: 100-entry journals with old open incidents (they must survive a hundred newer ones; finished ones and a `rollback ok` still age out) and unfinished entries damaged in 11 ways (no id, an id that is not a string, no plan, a plan that is not an object, no parent, no compose file, no members, members that are not a list, a member that is not an object, no backup path, a backup path that is not a string): each is refused in words, nothing changed. Removing each of 11 rules in turn: 11 fail a test. Suite 535 on Python 3.11, 3.12 and 3.13.
 
 **Not verified:** a real hand-damaged journal; entries with every field present but wrong in value (a compose path that does not exist is still the rollback's business and reported as a failure of the rollback, as before).
+### The "updated" and "rolled back" messages are retried (23 November 2026)
+
+Seen on the host: after the receiver came back at 200 and a `rpl notify` 35 s later, a group-apply key stayed `delivered` false 79 s after its `next_try`. Cause read in the code: `deliver` retries only what it is given and the apply gives each message once. Fix, tests first: `rpl notify` produces the two informative messages again from the journal, with the key and text of the apply (kept in one module, `rpl/groupmsg.py`). The tests use the real group apply (the model of `tests/fake_group.py`) and the real `notify.deliver` with its `notifs.json`; only the channel is a double: the collector's key and text equal the apply's (success and rollback); a message whose first delivery failed is sent once by the collector and the next run sends nothing; one that arrived is not sent again; a result older than the window, a failed rollback, an unreadable journal and entries without an id or a plan produce nothing. Suite 542 on Python 3.11, 3.12 and 3.13.
+
+**Not verified:** a real run on the host; two processes sending the same message at the same instant (possible, see the lock change); the 72-hour window as a choice, not measured.
 
 ## What was not measured
 
