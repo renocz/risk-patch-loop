@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Notifications: what the second round of measures changed
+- A text cut to fit a notification (a nightly failure reason over 300 characters) now ends with an ellipsis; it was cut silently. `rpl watch` names the cause of a `PermissionError` (the group journal is mode 0600: run it as the account that runs `rpl group`). `docs/trial/notify.md` says so. 3 new tests, failing before (suite: 474, Python 3.11, 3.12, 3.13).
+- Measured, not changed: a complete apply of the trial group takes 3.5 to 3.7 s (4 runs, tiny group, says nothing about a real one). Written as limits: `Retry-After` ignored, `max_attempts` counted runs not time (a minute timer gave up sending after about 20 minutes: fixed in "retries by elapsed time" below), a hanging channel holds a run 15 s. See `docs/results.md`.
 ### Notifications: retries by elapsed time
 - `rpl/notify.py`: a failed event is retried after 30 s, then 60 s, doubling up to one hour (`next_try` in `notifs.json`). A run that finds the event still waiting leaves it queued and does not count a try. Before, every run was a try, so a timer every minute used up `max_attempts` (20) in about twenty minutes and the alert was no longer sent (found by reading the code after the 23 November 2026 measures; the alert stayed printed). With the defaults the 20 tries now span about 13 hours (arithmetic, not run). A `next_try` further ahead than the cap (a clock that went back) is not trusted.
 - Not done: `Retry-After` is not read; a hanging channel still holds a run for the 15 s timeout, per channel and per event. 9 new tests, failing before; five existing tests that expected an immediate retry now move their clock (suite: 480, Python 3.11, 3.12, 3.13; 7 of 7 removals of the new rules fail a test).

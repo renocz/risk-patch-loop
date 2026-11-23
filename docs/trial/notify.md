@@ -79,7 +79,9 @@ Expect the first `exit 0` with the message received **once**, the second `exit 0
 
 ## 5. The timer alone, with the nightly job absent
 
-The point is that a new incident is detected by the timer and by nothing else. Confirm no nightly timer or cron entry exists for the trial (`systemctl --user list-timers`, `crontab -l`). Where `systemctl --user` works (it did not as root in an LXC container: no user bus; use system units there, or `loginctl enable-linger` with `XDG_RUNTIME_DIR`, untested), create the units with the account that owns the secret file, with the same `RPL_CONFIG` and `PYTHONPATH` as `env.sh`:
+The point is that a new incident is detected by the timer and by nothing else. Confirm no nightly timer or cron entry exists for the trial (`systemctl --user list-timers`, `crontab -l`). **Account.** The group apply writes `group-journal.json` with mode 0600, owned by whoever ran it. A timer under another account cannot read it: `rpl watch` then exits 2 with `PermissionError` (seen on 23 November 2026, until the file was made readable by hand). Run the timer as the account that runs `rpl group`; do not loosen the journal's mode for this.
+
+Where `systemctl --user` works (it did not as root in an LXC container: no user bus; use system units there, or `loginctl enable-linger` with `XDG_RUNTIME_DIR`, untested), create the units with the account that owns the secret file, with the same `RPL_CONFIG` and `PYTHONPATH` as `env.sh`:
 
 ```ini
 # ~/.config/systemd/user/rpl-watch.service

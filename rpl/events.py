@@ -42,7 +42,9 @@ TEXT_MAX = 300
 
 
 def _clean(value, n=TEXT_MAX):
-    return " ".join(str(value).split())[:n]
+    """One line, at most n characters; a cut is shown by an ellipsis, never silent."""
+    text = " ".join(str(value).split())
+    return text if len(text) <= n else text[:n - 1] + "\u2026"
 
 
 def _number(v):
