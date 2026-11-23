@@ -97,11 +97,12 @@ SuccessExitStatus=0 1
 [Timer]
 OnBootSec=1min
 OnUnitActiveSec=1min
+AccuracySec=1s
 [Install]
 WantedBy=timers.target
 ```
 
-`systemctl --user daemon-reload && systemctl --user enable --now rpl-watch.timer`. Then kill a new apply (run A again, a fresh trial group state) and wait: do not run `rpl watch` by hand. Expect a message within about two minutes after the grace, from `journalctl --user -u rpl-watch` an `ALERT:` line, and no message from a second timer tick. If no secret-read error appears under the timer's account, the 0600 file is readable there; if one does, that is a finding. Time the kill, the alert and the message.
+`AccuracySec=1s` matters: systemd lets a timer fire up to `AccuracySec` late (one minute by default) to group wake-ups, so a one-minute timer can run every one to two minutes; on 23 November 2026 a one-minute timer gave about 26 runs in 30 minutes. That cause is likely, not verified (the run was made without the setting). `systemctl --user daemon-reload && systemctl --user enable --now rpl-watch.timer`. Then kill a new apply (run A again, a fresh trial group state) and wait: do not run `rpl watch` by hand. Expect a message within about two minutes after the grace, from `journalctl --user -u rpl-watch` an `ALERT:` line, and no message from a second timer tick. If no secret-read error appears under the timer's account, the 0600 file is readable there; if one does, that is a finding. Time the kill, the alert and the message.
 
 A timer that stops running is not detected by anything: after the trial look at `systemctl --user list-timers` and say in the results how you would notice.
 

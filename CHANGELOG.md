@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Docs: the timer example sets AccuracySec=1s
+- The example `rpl-watch.timer` of `docs/trial/notify.md` now sets `AccuracySec=1s`: systemd lets a timer fire up to a minute late by default, which is the likely cause (not verified, nothing was run with the setting) of about 26 runs in 30 minutes seen on the host where about 30 were expected. `docs/results.md` says so and what to measure.
+
 ### Notifications: notifs.json is owner-only
 - `notifs.json` was created with the caller's umask (0644 under the common 022); only `notifs.json.lock` was forced to 0600. It holds container and image names and the last error of each channel. It is now written 0600 (`os.open` with 0600 and `fchmod`, so a leftover temporary file with loose rights does not leak into it), and an existing world-readable one is tightened at its next write. Found by the replay of #19 and #20 on the host.
 - 3 new tests, 3 failing before; suite 529, Python 3.11, 3.12, 3.13. Of 2 removals of its rules, 1 fails a test and 1 survives (an equivalent mutant: `fchmod` restores 0600 anyway). The replay on the host of #19 and #20 is recorded in `docs/results.md`: failed rollback re-presented once and closed when the backup was deleted, no mark lost over 400 concurrent turns, a held lock does not stop an alert (5.1 s).

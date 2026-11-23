@@ -253,6 +253,10 @@ Same host and tooling as the replay above, root, a fresh disposable trial group,
 
 **Found by this round:** (1) an event that disappears while its key is queued is never retried, which is the intended behaviour for a resolved condition: the unfinished-apply key of the first interrupted apply of the loop, resumed afterwards, stayed `delivered` false, `tries` 2, and no alert about an apply that was resumed should be sent. It is also the known limit for the group apply's "updated" and "rolled back" messages. (2) `notifs.json` was created with the caller's umask (0644 under 022), only the lock file was forced to 0600; the file holds container and image names and the last error of each channel. Fixed here: it is written 0600 (`os.open` with 0600 plus `fchmod`, so a leftover temporary file does not leak its rights), also tightening an existing world-readable file at its next write. 3 new tests, 3 failing before; of 2 removals, 1 fails a test and 1 survives as an equivalent mutant (`fchmod` restores 0600 anyway). The whole file was not read for secrets, only its keys and fields were looked at; by the code, errors keep a channel's type and the controlled messages of `notify.py`, never a URL or a token. (3) the two messages of one key can have different texts, and the first delivered wins (seen: `watch`'s text after a failed first send of the group apply's).
 
+### Timer accuracy (23 November 2026)
+
+The replay of #15, #17 and #18 counted about 25 `ALERT` lines and 26 runs of a one-minute `rpl watch` timer over 30 minutes where about 30 were expected, and the agent could not explain it. A likely cause, not verified: systemd's `AccuracySec` defaults to one minute, so a timer may fire up to a minute late to group wake-ups. The example unit in `docs/trial/notify.md` now sets `AccuracySec=1s`. Nothing was run with the setting; the effect on the number of runs is still to be measured on the host (30 minutes, a one-minute timer, count the runs in the journal).
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.
