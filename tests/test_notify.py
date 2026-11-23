@@ -220,6 +220,16 @@ class Backoff(Base):
         self.assertEqual(res["given_up"], [])
         self.assertLess(len(self.posts), 20)
 
+    def test_an_hourly_timer_gets_one_try_per_run_for_about_twenty_hours(self):
+        t, sends = 1000.0, []
+        for run in range(1, 26):
+            res = self.go(t)
+            if res["given_up"]:
+                sends.append(run)
+                break
+            t += 3600
+        self.assertEqual((sends, len(self.posts)), ([21], 20))               # 20 tries on runs 1..20, given up on run 21
+
     def test_the_cap_on_attempts_still_applies(self):
         t = 1000.0
         for _ in range(30):

@@ -15,7 +15,7 @@ Rules, each covered by a test:
   - secrets are read from files that must not be readable by group or others, and are never printed, logged or put in the state file;
   - the webhook resolves the host ONCE, refuses private, loopback and link-local addresses (unless allow_private), connects to the
     address it checked, and does not follow redirects.
-Limits, written down: the delay does not read a `Retry-After` header; a channel that hangs holds a run for the 15 s timeout, per channel and per event;
+Limits, written down: how long 20 tries last depends on how often the caller runs (about 13 h at one run per minute, about 20 h at one per hour); the delay does not read a `Retry-After` header; a channel that hangs holds a run for the 15 s timeout, per channel and per event;
 "delivered" means the receiving service answered 2xx, not that a person read it. The nightly-run check is a function
 (`missing_run`) the caller runs from a timer that does not depend on the nightly job. A channel that succeeded is not remembered separately:
 when one of two channels fails, the event is sent again to both on the next try.
