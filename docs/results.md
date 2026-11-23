@@ -157,6 +157,34 @@ Run in a cloud sandbox, not on the author's host: Linux 6.18, ext file system, n
 
 **Not verified:** two real updates competing on a real Docker host; a nightly job and a manual run colliding; NFS or any network file system; macOS or another Unix; Windows (no `fcntl`: the code refuses, only simulated by a test); runners under different user accounts (the lock file is created with mode 0600, so a second account is refused rather than admitted, by reading the code, not by a test). The test "a child process does not keep the lock" passes partly because Python closes inherited descriptors when it starts a process.
 
+## Notifications: `rpl watch` and `rpl notify` (23 November 2026)
+
+Two additions on top of `rpl/notify.py`: `rpl/watch.py` (a group apply that never recorded a result) and `rpl/events.py` (collects events and calls `notify.deliver`). Written test first: the tests were run against stubs returning nothing and failed on their assertions before any rule existed (`tests/test_watch.py`: 22 tests, 19 failing or erroring; `tests/test_events.py`: 35 tests, 26 failing), then the code was written.
+
+- Suite: 471 tests (409 before; 4 of them keep `docs/trial/notify.md` valid), passing on Python 3.11.2, 3.12 and 3.13.18. Not run on 3.9 (not installed in the sandbox); the new files were only checked to parse with 3.9 syntax. CI runs 3.9 and 3.12.
+- Mutation check, by hand: 15 rules of the two modules were removed one at a time (the open-entry test, the future-timestamp guard, the unreadable-journal paths, the exit codes, the baseline, the delivered-only memory, the window, the proven-fix filter, the catch-all around a source) and the tests rerun: 14 failed at first, the 15th (the catch-all that turns a crashing source into an error event) survived, a test was added, and all 15 now fail at least one test.
+- One test writes an entry with the group apply's own `_record` and checks that `rpl watch` sees it open, then closed.
+
+**What was not verified:** a real SIGTERM against a real group apply followed by `rpl watch` (the entry shape comes from `groupapply._record`, not from a killed process); delivery to a real Telegram or webhook; a real systemd timer or cron; a nightly job that calls `rpl notify --record`; the real size of the grace period (60 minutes is a guess, no apply duration was measured on a real host, and an apply that runs longer than the grace gives a false alarm); two `rpl watch` / `rpl notify` runs at the same instant (they share `notifs.json` without a lock); the container names of a real inventory on the first baseline.
+
+**Found while writing it, not fixed:** `groupapply._journal` returns an empty list for a journal that is valid JSON but not a list, so the group apply would read it as "nothing unfinished"; `rpl watch` reports it as unreadable instead. The group apply was not touched.
+
+### Supervised trial of `rpl watch` and `rpl notify` (23 November 2026)
+
+Procedure `docs/trial/notify.md` at commit 4768ca6, run by the owner's local agent on the author's host (an LXC container, run as root; Docker 29.10.0, Compose 5.8.0, Python 3.11.2, systemd 252) on the disposable trial group. **The channel was a temporary HTTP receiver on the loopback interface (with `allow_private`), not a remote service: nothing went to Telegram or to a real webhook.** The code, the real `rpl.json`, the real state and the real nightly job were not touched.
+
+- `rpl watch`: exit 0 and silent on a clean state. Two applies killed by SIGTERM, one right after `backup:` (journal state `backed-up`) and one after `parent: recreated` (state `changing`), both exit 143: `watch` at once gave exit 0 (grace of 1 minute, set for the test), at +70 s exit 1 with an `ALERT` line and one message, a second run exit 1 with no second message, the next apply was refused, `--resume` printed `rollback ok`, the three containers ran their original images again, and `watch` returned to exit 0. A journal holding `{"result": null}`: exit 2 and one message; restored: exit 0.
+- Timer alone (two throw-away system units, every minute, nothing else running, no `rpl watch` by hand): a third kill at 17:19:22 UTC, the alert at 17:20:29, the message received 67 s after the kill, several later ticks printing `ALERT`, one message. No permission error reading the secret, as root.
+- `rpl notify`: first run `baseline recorded: 78 containers`; a container added while the channel pointed to a name that does not resolve: `1 queued`, exit 1, `notifs.json` with `tries` 1 and `last_error` `webhook: the host name does not resolve`, no URL or token in it; channel restored: delivered once, then nothing; the removed container never reported.
+- Nightly script copy under `set -e`: success writes `ok`, no message; `scan` replaced by `false` writes `failed` (the trap runs) and one message `The nightly run failed: nightly exited 1`; a record aged by 40 h gives one message `has not completed for 40 h`, none on the next run.
+- Ten messages received in all; none carried the secret or a path of a home directory. A delivery took 2 ms on the loopback receiver, which says nothing about a remote service. No false alert and no duplicate alert.
+
+**Defect found by this trial, in the group apply (not fixed in this change, a separate task is open):** the messages `rolled-back` and `rollback-failed` of `rpl group` are keyed on parent, plan fingerprint and outcome. After the first resume, the later resumes of the same plan sent nothing and printed `notification not delivered yet (queued, see notifs.json)`, although nothing was queued: `notify.deliver` leaves an already delivered key out of its lists, and `_tell` reads that as "not delivered". Read in the code afterwards: a second failed rollback of the same plan, including `CHECK BY HAND`, would be silent. `rpl watch` does not cover this case (the entry has a result by then).
+
+**Where the procedure was wrong or silent, now corrected in `notify.md`:** `rpl notify` has no test option (step 0 gave one); the first `rpl notify` also reports a missing nightly run when no job records one; the group apply sends its own first `rolled back` message; a receiver on the same host needs `allow_private`; `systemctl --user` does not work as root in an LXC container (system units were used, written by the agent from the description, not from a model); a monitoring tool on the host also alerts on the killed containers.
+
+**Not verified:** a remote webhook or Telegram (latency, quota, network failure, formatting); a timer under a non-root account and the secret read by another account; a user unit; a server restart with the timer active; a timer that stops; the duration of a normal apply (every apply of the trial was interrupted, so the grace of 60 minutes is still a guess); a nightly job that really runs from cron or a timer; two runs at the same instant.
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.

@@ -37,6 +37,11 @@ DEFAULTS = {
     # group apply (rpl/groupapply.py): backups of configuration directories go to <backup_dir>/group-*, owner-only
     "group_backup_retention_days": 7,     # `rpl group --purge` deletes older ones
     "group_backup_max_mb": 2048,          # more than this is data, not configuration: the apply is refused
+    # `rpl watch` (rpl/watch.py): an open group-journal entry younger than this is taken for an apply in progress
+    "group_unfinished_grace_minutes": 60,
+    # `rpl notify` (rpl/events.py): hours without a recorded nightly run before it is "missing"; patch results older than the window are not replayed
+    "nightly_max_hours": 36,
+    "events_window_hours": 72,
     # how many minutes to wait for a health check / route after an update
     "health_timeout_s": 180,
     "route_timeout_s": 150,
