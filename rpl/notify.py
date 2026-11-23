@@ -9,11 +9,14 @@ Config (rpl.json):
 Rules, each covered by a test:
   - an event is marked delivered only when EVERY channel confirmed it (HTTP 2xx); otherwise it stays queued and is retried, up to
     `max_attempts`, and the state is visible in notifs.json (tries, last error);
+  - a failed event is retried after 30 s, then 60 s, doubling up to one hour (`next_try` in notifs.json), counted in elapsed time: a run that finds
+    the event still waiting leaves it queued and does not count a try, so a timer every minute does not use up `max_attempts` in twenty minutes;
   - one message per event key (the key carries the version, e.g. "fix:app-1:CVE-2026-0001:2.4.1");
   - secrets are read from files that must not be readable by group or others, and are never printed, logged or put in the state file;
   - the webhook resolves the host ONCE, refuses private, loopback and link-local addresses (unless allow_private), connects to the
     address it checked, and does not follow redirects.
-Limits, written down: "delivered" means the receiving service answered 2xx, not that a person read it. The nightly-run check is a function
+Limits, written down: the delay does not read a `Retry-After` header; a channel that hangs holds a run for the 15 s timeout, per channel and per event;
+"delivered" means the receiving service answered 2xx, not that a person read it. The nightly-run check is a function
 (`missing_run`) the caller runs from a timer that does not depend on the nightly job. A channel that succeeded is not remembered separately:
 when one of two channels fails, the event is sent again to both on the next try.
 """
@@ -29,6 +32,8 @@ from urllib.parse import urlsplit
 from . import config
 
 DEFAULT_MAX_ATTEMPTS = 20
+RETRY_BASE_S = 30                    # wait after the first failure; doubles with each one
+RETRY_CAP_S = 3600                   # never wait longer than this between two tries
 
 
 class NotifyError(Exception):
@@ -129,8 +134,13 @@ def deliver(events, cfg, poster=post, now=time.time):
         if st["tries"] >= cap:
             out["given_up"].append(key)
             continue
+        t = now()
+        due = st.get("next_try")
+        if st["tries"] and isinstance(due, (int, float)) and t < due <= t + RETRY_CAP_S:
+            out["queued"].append(key)                         # waiting for its delay: not a try (a time further ahead than the cap is not trusted)
+            continue
         st["tries"] += 1
-        st["last_try"] = now()
+        st["last_try"] = t
         errors = []
         if not channels:
             errors.append("no channel configured")
@@ -148,10 +158,12 @@ def deliver(events, cfg, poster=post, now=time.time):
                 errors.append(f"{ch.get('type')}: {type(e).__name__}")
         if errors:
             st["last_error"] = "; ".join(errors)
+            st["next_try"] = t + min(RETRY_BASE_S * 2 ** (st["tries"] - 1), RETRY_CAP_S)
             out["queued"].append(key)
         else:
             st["delivered"] = True
             st.pop("last_error", None)
+            st.pop("next_try", None)
             out["delivered"].append(key)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

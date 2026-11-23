@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from rpl import groupapply, watch
+from rpl import groupapply, notify, watch
 
 NOW = 1_800_000_000.0
 
@@ -19,6 +19,7 @@ class Base(unittest.TestCase):
         self.state = os.path.join(self.tmp.name, "state")
         os.makedirs(self.state)
         self.posts = []
+        self.now = NOW
         self.cfg = {"state_dir": self.state, "notifications": {"channels": [{"type": "webhook", "url": "https://hooks.example.test/x"}]}}
 
     def poster(self, url, body, headers, allow):
@@ -37,7 +38,7 @@ class Base(unittest.TestCase):
     def run_watch(self, cfg=None):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = watch.run(cfg or self.cfg, self.poster, lambda: NOW)
+            rc = watch.run(cfg or self.cfg, self.poster, lambda: self.now)
         return rc, out.getvalue()
 
 
@@ -162,6 +163,7 @@ class Delivery(Base):
         codes = iter([500, 200])
         self.poster = lambda url, body, headers, allow: next(codes)
         self.run_watch()
+        self.now += notify.RETRY_BASE_S + 1                 # the retry delay has passed
         self.run_watch()
         with open(os.path.join(self.state, "notifs.json")) as f:
             state = json.load(f)

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from rpl import events
+from rpl import events, notify
 
 NOW = 1_800_000_000.0
 H = 3600
@@ -21,6 +21,7 @@ class Base(unittest.TestCase):
         os.makedirs(self.state)
         self.posts = []
         self.code = 200
+        self.now = NOW
         self.cfg = {"state_dir": self.state, "notifications": {"channels": [{"type": "webhook", "url": "https://hooks.example.test/x"}]}}
         self.nightly_ok()                                  # most tests are about something else
 
@@ -44,7 +45,7 @@ class Base(unittest.TestCase):
     def run_cmd(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = events.run(self.cfg, self.poster, lambda: NOW)
+            rc = events.run(self.cfg, self.poster, lambda: self.now)
         return rc, out.getvalue()
 
 
@@ -182,6 +183,7 @@ class NewApplications(Base):
         self.run_cmd()
         self.assertEqual(self.keys(), ["new-app:app-2"])
         self.code = 200
+        self.now += notify.RETRY_BASE_S + 1                 # the retry delay has passed
         self.run_cmd()
         self.assertEqual(self.posts[-1], self.posts[0])
         self.assertEqual(self.keys(), [])
@@ -231,6 +233,9 @@ class Delivery(Base):
         self.code = 500
         self.assertEqual(self.run_cmd()[0], 1)
         self.code = 200
+        self.assertEqual(self.run_cmd()[0], 1)              # still inside the retry delay: nothing sent, still not delivered
+        self.assertEqual(len(self.posts), 1)
+        self.now += notify.RETRY_BASE_S + 1
         self.assertEqual(self.run_cmd()[0], 0)
         self.assertEqual(len(self.posts), 2)
 

@@ -185,6 +185,12 @@ Procedure `docs/trial/notify.md` at commit 4768ca6, run by the owner's local age
 
 **Not verified:** a remote webhook or Telegram (latency, quota, network failure, formatting); a timer under a non-root account and the secret read by another account; a user unit; a server restart with the timer active; a timer that stops; the duration of a normal apply (every apply of the trial was interrupted, so the grace of 60 minutes is still a guess); a nightly job that really runs from cron or a timer; two runs at the same instant.
 
+### Retry delay by elapsed time (23 November 2026)
+
+Reading `notify.deliver` after the second round of measures: `max_attempts` counted runs, so a timer every minute would stop sending after about 20 minutes of channel outage (the alert stays printed on every `rpl watch` run). Fixed in `rpl/notify.py`: retry after 30 s, doubling up to 1 h, a waiting event is not a try. Tests first (the new ones failed before, 2 on an assertion and 6 on the missing constants), then the code; a sixty-run test with a one-minute timer checks that nothing is given up and that fewer than 20 sends happen. Suite 480, passing on Python 3.11, 3.12 and 3.13. By hand, 7 removals of the new rules (the gate, the future-time guard, the doubling, the ceiling, the cleanup of `next_try`, counting a held event as a try, the stored `next_try`) each fail at least one test.
+
+**Not verified:** a real timer or a real channel outage (the delay is tested with an injected clock only); that 13 hours is the right span (the 20 tries over about 13 hours come from arithmetic on the constants); `Retry-After` (still ignored: the delay does not read it, the headers are not returned by `notify.post`); a channel that hangs (15 s per channel and per event, not configurable); two runs at the same instant.
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.
