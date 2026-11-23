@@ -13,7 +13,7 @@ import time
 import unittest
 from unittest import mock
 
-from rpl import config, gate, group, groupapply
+from rpl import config, events, gate, group, groupapply, notify
 
 from .fake_group import GroupHost
 from .fakes import rpl_config, write_compose_text
@@ -863,6 +863,160 @@ class OneMessagePerApply(GroupCase):
         out = self.tell(given_up=["k"])
         self.assertIn("given up", out)
         self.assertNotIn("queued", out)
+
+
+class JournalRetention(GroupCase):
+    """The journal keeps the last 100 entries; an open incident (an apply with no result, a failed rollback) must not be dropped by newer ones."""
+
+    def put(self, entries):
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL), json.dumps(entries))
+
+    def finished(self, n):
+        return [{"id": f"done-{i}", "ts": 1000.0 + i, "result": "ok", "plan": {"parent": "p"}} for i in range(n)]
+
+    def test_old_open_incidents_survive_a_hundred_newer_entries(self):
+        unfinished = {"id": "old-unfinished", "ts": 1.0, "result": None, "plan": {"parent": "p"}, "backup_root": "/nowhere/a"}
+        failed = {"id": "old-failed", "ts": 2.0, "result": "rollback FAILED: CHECK BY HAND", "plan": {"parent": "p"}, "backup_root": "/nowhere/b"}
+        self.put([unfinished, failed] + self.finished(150))
+        groupapply._record(self.cfg, {"id": "new", "ts": 9999.0, "result": "ok", "plan": {"parent": "p"}})
+        ids = [e["id"] for e in groupapply._journal(self.cfg)]
+        self.assertIn("old-unfinished", ids)
+        self.assertIn("old-failed", ids)
+        self.assertEqual(len(ids), 2 + 100)
+        self.assertEqual(ids[-1], "new")
+
+    def test_old_finished_entries_are_still_dropped(self):
+        self.put(self.finished(150))
+        groupapply._record(self.cfg, {"id": "new", "ts": 9999.0, "result": "ok", "plan": {"parent": "p"}})
+        ids = [e["id"] for e in groupapply._journal(self.cfg)]
+        self.assertEqual(len(ids), 100)
+        self.assertNotIn("done-0", ids)
+
+    def test_a_rollback_that_succeeded_is_not_kept_for_ever(self):
+        self.put([{"id": "old-ok", "ts": 1.0, "result": "rollback ok", "plan": {"parent": "p"}}] + self.finished(150))
+        groupapply._record(self.cfg, {"id": "new", "ts": 9999.0, "result": "ok", "plan": {"parent": "p"}})
+        self.assertNotIn("old-ok", [e["id"] for e in groupapply._journal(self.cfg)])
+
+    def test_a_journal_below_the_limit_is_kept_whole(self):
+        self.put(self.finished(10))
+        groupapply._record(self.cfg, {"id": "new", "ts": 9999.0, "result": "ok", "plan": {"parent": "p"}})
+        self.assertEqual(len(groupapply._journal(self.cfg)), 11)
+
+
+class UnfinishedEntryIncomplete(GroupCase):
+    """`--resume` indexes the entry's id, plan and backup path. An entry that lacks one used to end in a traceback, with the incident still open
+    and nothing said to the human: it is now refused in words."""
+
+    def put(self, entry):
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL), json.dumps([entry]))
+
+    def good(self):
+        return {"id": "p-20261120-000000", "ts": 1000.0, "result": None, "state": "changing", "backup_root": "/nowhere/backup",
+                "plan": {"parent": "p", "compose": "/nowhere/compose.yaml", "members": [{"service": "s", "from": "a", "to": "b"}]}}
+
+    def test_each_missing_or_malformed_piece_is_refused_in_words(self):
+        cases = {"no id": lambda e: e.pop("id"),
+                 "an id that is not a string": lambda e: e.update(id=3),
+                 "no plan": lambda e: e.pop("plan"),
+                 "a plan that is not an object": lambda e: e.update(plan=[1]),
+                 "no parent": lambda e: e["plan"].pop("parent"),
+                 "no compose file": lambda e: e["plan"].pop("compose"),
+                 "no members": lambda e: e["plan"].pop("members"),
+                 "members that are not a list": lambda e: e["plan"].update(members="x"),
+                 "a member that is not an object": lambda e: e["plan"].update(members=["x"]),
+                 "no backup path": lambda e: e.pop("backup_root"),
+                 "a backup path that is not a string": lambda e: e.update(backup_root=3)}
+        for name, damage in cases.items():
+            with self.subTest(name):
+                e = self.good()
+                damage(e)
+                self.put(e)
+                rc, out = self.run_group("--resume")
+                self.assertEqual(rc, 1, out)
+                self.assertIn("REFUSED", out)
+                self.assertIn("cannot be resumed", out)
+                self.assert_nothing_changed()
+
+    def test_a_complete_entry_is_still_resumed(self):
+        self.assertEqual(groupapply._resume_problem(self.good()), None)
+class RetriedByTheCollector(GroupCase):
+    """The group apply gives its "updated" and "rolled back" messages to `deliver` once. `rpl notify` produces them again from the journal, with
+    the same key and the same text, so a message whose first delivery failed is retried and one that arrived is not sent twice."""
+
+    def setUp(self):
+        super().setUp()
+        self.configure(notifications={"channels": [{"type": "webhook", "url": "https://hooks.example.test/x"}]})
+        self.sent, self.code = [], 200
+        channel = mock.patch.dict(groupapply.notify.CHANNELS, {"webhook": lambda ch, text, poster: self.sent.append(text) or self.code})
+        channel.start()
+        self.addCleanup(channel.stop)
+
+    def notifs(self):
+        with open(os.path.join(self.cfg["state_dir"], "notifs.json")) as f:
+            return json.load(f)
+
+    def later(self):
+        return self.journal()[-1]["ts"] + notify.RETRY_CAP_S + 60
+
+    def collect(self):
+        return events.group_result_events(self.cfg, self.journal()[-1]["ts"] + 60)
+
+    def run_collector(self, at):
+        events.record(self.cfg, "ok", "", lambda: at)                         # a recent nightly record: otherwise `rpl notify` also reports that
+        with contextlib.redirect_stdout(io.StringIO()):
+            return events.run(self.cfg, None, lambda: at)
+
+    def test_the_success_message_is_reproduced_with_the_same_key_and_text(self):
+        self.assertEqual(self.run_group()[0], 0)
+        (key,) = self.notifs()
+        self.assertEqual(self.collect(), [{"key": key, "text": self.sent[0]}])
+
+    def test_the_rollback_message_is_reproduced_with_the_same_key_and_text(self):
+        self.host.fail_up_images.add(NEW_TUNNEL)
+        self.assertEqual(self.run_group()[0], 2)
+        (key,) = self.notifs()
+        self.assertEqual(self.collect(), [{"key": key, "text": self.sent[0]}])
+
+    def test_a_message_whose_first_delivery_failed_is_sent_by_the_collector_once(self):
+        self.code = 500
+        self.host.fail_up_images.add(NEW_TUNNEL)
+        self.run_group()
+        self.assertEqual(len(self.sent), 1)
+        self.code = 200
+        self.run_collector(self.later())
+        self.run_collector(self.later() + 10)
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(self.sent[1], self.sent[0])
+
+    def test_a_message_that_arrived_is_not_sent_again(self):
+        self.run_group()
+        self.run_collector(self.later())
+        self.assertEqual(len(self.sent), 1)
+
+    def test_a_result_older_than_the_window_is_not_replayed(self):
+        self.run_group()
+        self.assertEqual(events.group_result_events(self.cfg, self.journal()[-1]["ts"] + 73 * 3600), [])
+
+    def test_a_failed_rollback_is_left_to_rpl_watch(self):
+        entry = {"id": "a", "ts": 1000.0, "result": "rollback FAILED: CHECK BY HAND", "why": "x", "plan": {"parent": "p", "members": []}}
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL), json.dumps([entry]))
+        self.assertEqual(events.group_result_events(self.cfg, 1100.0), [])
+
+    def test_a_journal_that_cannot_be_read_gives_nothing_and_does_not_raise(self):
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        for text in ("{broken", '{"result": null}', '["x"]', "[null]"):
+            self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL), text)
+            self.assertEqual(events.group_result_events(self.cfg, 1100.0), [])      # `rpl watch` is the one that says it
+
+    def test_an_entry_without_an_id_or_a_plan_is_skipped(self):
+        good = {"id": "g", "ts": 1000.0, "result": "ok", "plan": {"parent": "p", "members": [{"service": "s", "to": "img:2"}]}}
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL),
+                   json.dumps([{"ts": 1000.0, "result": "ok", "plan": {"parent": "p"}}, {"id": "n", "ts": 1000.0, "result": "ok"}, good]))
+        self.assertEqual([e["key"] for e in events.group_result_events(self.cfg, 1100.0)], ["group:g:ok"])
 
 
 class TreeCopy(unittest.TestCase):

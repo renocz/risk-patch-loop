@@ -17,7 +17,7 @@ delivered through rpl.notify, one message per journal entry.
 
 Limits, written down:
   - a failed rollback is told only while its backup path exists: deleting the backup without repairing closes the incident (it is the human's act);
-    an entry that names no usable backup path stays open for ever; the journal keeps 100 entries, so an incident older than that is forgotten;
+    an entry that names no usable backup path stays open for ever; the journal keeps the last 100 entries and every older open incident (an apply with no result, a failed rollback), so newer applies do not make an incident forgotten;
   - an entry younger than `group_unfinished_grace_minutes` (default 60) is taken for an apply in progress and not reported; an interrupted apply is
     therefore reported after that delay, and an apply that really runs longer than the delay gives a false alarm;
   - the journal is read with plain file access, not under the shared lock: a read during a write sees the old or the new file (the writer replaces it
@@ -33,16 +33,13 @@ import os
 import sys
 import time
 
-from . import config, notify
+from . import config, groupmsg, notify
 
 JOURNAL = "group-journal.json"          # the name groupapply.py writes (a test keeps the two equal)
 DEFAULT_GRACE_MIN = 60
 
 
-def group_key(entry_id, outcome):
-    """The notification key of a group apply: one per apply (its journal entry id) and outcome ("ok", "rolled-back", "rollback-failed").
-    The group apply and `rpl watch` both use it, so `rpl.notify` sends a given message once, whoever gives it first."""
-    return f"group:{entry_id}:{outcome}"
+group_key = groupmsg.group_key              # the group apply, `rpl watch` and `rpl notify` all use this one key builder
 CLOCK_SKEW_S = 300                      # a start time further in the future than this is not trusted
 
 

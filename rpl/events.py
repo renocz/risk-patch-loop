@@ -31,7 +31,7 @@ import os
 import sys
 import time
 
-from . import config, notify
+from . import config, groupmsg, notify
 
 NIGHTLY = "nightly.json"
 KNOWN = "apps-known.json"
@@ -167,7 +167,33 @@ def new_app_events(cfg, now):
             for n in names if n not in known]
 
 
-SOURCES = (("nightly.json", nightly_events), ("patches.json", patch_events), ("proposals.json", exclusion_events), ("inventory.json", new_app_events))
+def group_result_events(cfg, now):
+    """The "updated" and "rolled back" messages of the group apply, produced again from its journal with the same key and text, so one whose first
+    delivery failed is retried (the apply gives its message to `deliver` once). Entries younger than the window only. A failed rollback is `rpl
+    watch`'s (it never expires); a journal that cannot be read gives nothing here, `rpl watch` says so."""
+    try:
+        with open(config.state(cfg, "group-journal.json"), encoding="utf-8") as f:
+            entries = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(entries, list):
+        return []
+    window = 3600 * float(cfg.get("events_window_hours", DEFAULT_WINDOW_H))
+    out = []
+    for e in entries:
+        if not isinstance(e, dict) or not isinstance(e.get("plan"), dict) or not isinstance(e.get("id"), str) or not _number(e.get("ts")):
+            continue
+        outcome = {"ok": "ok", "rollback ok": "rolled-back"}.get(e.get("result"))
+        if outcome is None or now - e["ts"] > window:
+            continue
+        members = [m for m in e["plan"].get("members") or [] if isinstance(m, dict)]
+        out.append({"key": groupmsg.group_key(e["id"], outcome),
+                    "text": groupmsg.text(str(e["plan"].get("parent", "?")), outcome, str(e.get("why", "")), members)})
+    return out
+
+
+SOURCES = (("nightly.json", nightly_events), ("patches.json", patch_events), ("proposals.json", exclusion_events), ("inventory.json", new_app_events),
+           ("group-journal.json", group_result_events))
 
 
 def collect(cfg, now=time.time):
