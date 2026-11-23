@@ -51,7 +51,8 @@ class Delivery(Base):
         self.assertEqual(notify.deliver([EV], cfg, poster)["queued"], [EV["key"]])
         self.assertFalse(self.state(cfg)[EV["key"]]["delivered"])
         self.assertIn("HTTP 500", self.state(cfg)[EV["key"]]["last_error"])
-        self.assertEqual(notify.deliver([EV], cfg, poster)["delivered"], [EV["key"]])
+        later = lambda: __import__("time").time() + notify.RETRY_BASE_S + 1                  # after the retry delay
+        self.assertEqual(notify.deliver([EV], cfg, poster, later)["delivered"], [EV["key"]])
 
     def test_redirect_status_is_not_a_delivery(self):
         self.assertEqual(notify.deliver([EV], self.cfg([self.hook()]), lambda *a: 302)["queued"], [EV["key"]])
@@ -65,9 +66,9 @@ class Delivery(Base):
     def test_attempts_are_capped_and_visible(self):
         cfg = self.cfg([self.hook()], max_attempts=2)
         poster = lambda *a: 500
-        for _ in range(2):
-            notify.deliver([EV], cfg, poster)
-        self.assertEqual(notify.deliver([EV], cfg, poster)["given_up"], [EV["key"]])
+        for i in range(2):
+            notify.deliver([EV], cfg, poster, lambda: 1000.0 + i * notify.RETRY_CAP_S)
+        self.assertEqual(notify.deliver([EV], cfg, poster, lambda: 1000.0 + 2 * notify.RETRY_CAP_S)["given_up"], [EV["key"]])
         self.assertEqual(self.state(cfg)[EV["key"]]["tries"], 2)
 
     def test_no_channel_is_a_queued_error_not_a_silent_success(self):
@@ -158,6 +159,89 @@ class Destination(Base):
         status = notify.post(f"http://hooks.example.test:{port}/p?q=1", b"{}", {}, allow_private=True, resolver=lambda h, p: ["127.0.0.1"])
         self.assertEqual(status, 302)
         self.assertEqual(hits, [("/p?q=1", f"hooks.example.test:{port}")])
+
+
+class Backoff(Base):
+    """A failed event is retried after a delay that grows with elapsed time, not on every run: a timer every minute must not use up
+    `max_attempts` in twenty minutes."""
+
+    def setUp(self):
+        super().setUp()
+        self.posts = []
+        self.code = 500
+        self.poster = lambda url, body, headers, allow: self.posts.append(url) or self.code
+        self.cfg_ = self.cfg([{"type": "webhook", "url": "https://hooks.example.test/x"}])
+
+    def go(self, t, **kw):
+        return notify.deliver([EV], dict(self.cfg_, **kw), self.poster, lambda: t)
+
+    def test_a_retry_before_the_delay_sends_nothing_and_stays_queued(self):
+        self.go(1000.0)
+        res = self.go(1000.0 + 10)
+        self.assertEqual((len(self.posts), res["queued"]), (1, [EV["key"]]))
+        self.assertEqual(self.state(self.cfg_)[EV["key"]]["tries"], 1)       # a held event is not a try
+
+    def test_after_the_delay_it_is_sent_again(self):
+        self.go(1000.0)
+        self.go(1000.0 + notify.RETRY_BASE_S)
+        self.assertEqual(len(self.posts), 2)
+
+    def test_the_delay_doubles_with_each_failure(self):
+        t = 1000.0
+        self.go(t)
+        t += notify.RETRY_BASE_S
+        self.go(t)                                                           # second failure: next wait is twice the base
+        self.go(t + 2 * notify.RETRY_BASE_S - 1)
+        self.assertEqual(len(self.posts), 2)
+        self.go(t + 2 * notify.RETRY_BASE_S)
+        self.assertEqual(len(self.posts), 3)
+
+    def test_the_delay_has_a_ceiling(self):
+        t = 1000.0
+        for _ in range(12):
+            self.go(t)
+            t += notify.RETRY_CAP_S
+        self.assertEqual(len(self.posts), 12)                                # never more than the cap between two tries
+
+    def test_the_next_try_is_visible_in_the_state_file(self):
+        self.go(1000.0)
+        self.assertEqual(self.state(self.cfg_)[EV["key"]]["next_try"], 1000.0 + notify.RETRY_BASE_S)
+
+    def test_a_next_try_far_in_the_future_is_not_trusted(self):
+        self.go(1000.0)
+        self.go(1000.0 - 10 * 3600)                                          # the clock went back by ten hours
+        self.assertEqual(len(self.posts), 2)
+
+    def test_a_minute_timer_does_not_give_up_after_twenty_minutes(self):
+        t = 1000.0
+        for _ in range(60):
+            res = self.go(t)
+            t += 60
+        self.assertEqual(res["given_up"], [])
+        self.assertLess(len(self.posts), 20)
+
+    def test_an_hourly_timer_gets_one_try_per_run_for_about_twenty_hours(self):
+        t, sends = 1000.0, []
+        for run in range(1, 26):
+            res = self.go(t)
+            if res["given_up"]:
+                sends.append(run)
+                break
+            t += 3600
+        self.assertEqual((sends, len(self.posts)), ([21], 20))               # 20 tries on runs 1..20, given up on run 21
+
+    def test_the_cap_on_attempts_still_applies(self):
+        t = 1000.0
+        for _ in range(30):
+            res = self.go(t, notifications={"channels": self.cfg_["notifications"]["channels"], "max_attempts": 3})
+            t += notify.RETRY_CAP_S
+        self.assertEqual((res["given_up"], len(self.posts)), ([EV["key"]], 3))
+
+    def test_a_delivery_after_a_wait_clears_the_wait(self):
+        self.go(1000.0)
+        self.code = 200
+        self.assertEqual(self.go(1000.0 + notify.RETRY_BASE_S)["delivered"], [EV["key"]])
+        self.assertNotIn("next_try", self.state(self.cfg_)[EV["key"]])
 
 
 class NightlyMissing(unittest.TestCase):
