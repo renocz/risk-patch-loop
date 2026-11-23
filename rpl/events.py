@@ -68,7 +68,7 @@ def _load(cfg, name):
 
 def _error(cfg, name, problem):
     stamp = notify.file_stamp(config.state(cfg, name))
-    return {"key": f"error:{name}:{stamp}", "text": f"rpl: {name} {_clean(problem)}: what it holds is not being reported until it is fixed."}
+    return {"key": f"error:{name}:{stamp}", "critical": True, "text": f"rpl: {name} {_clean(problem)}: what it holds is not being reported until it is fixed."}
 
 
 # ---- sources: each takes (cfg, now) and returns events; an Unreadable becomes an error event --------------------------
@@ -82,7 +82,7 @@ def nightly_events(cfg, now):
         raise Unreadable("has the wrong shape (expected ts and a status of ok or failed)")
     out = []
     if data["status"] == "failed":
-        out.append({"key": f"nightly-failed:{int(data['ts'])}",
+        out.append({"key": f"nightly-failed:{int(data['ts'])}", "critical": True,
                     "text": "The nightly run failed" + (": " + _clean(data["reason"]) if data.get("reason") else " (no reason recorded).")})
     late = notify.missing_run(data["ts"], now, max_h)
     if late:
@@ -102,7 +102,7 @@ def patch_events(cfg, now):
         if now - e["ts"] > window:
             continue
         svc, res = _clean(e.get("service", "?"), 80), _clean(e.get("result", "?"), 80)
-        out.append({"key": f"patch:{svc}:{int(e['ts'])}",
+        out.append({"key": f"patch:{svc}:{int(e['ts'])}", "critical": "FAILED" in res or "aborted" in res,
                     "text": f"rpl patch of {svc} ({_clean(e.get('from', '?'), 100)} -> {_clean(e.get('to', '?'), 100)}): {res}."})
     return out
 
