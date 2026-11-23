@@ -28,10 +28,8 @@ class NotifyTrial(unittest.TestCase):
     def test_every_option_it_gives_to_rpl_notify_and_watch_exists(self):
         text = read(NOTIFY)
         used = set()
-        for line in text.splitlines():
-            for cmd in ("rpl notify", "rpl watch"):
-                if cmd in line:
-                    used |= {(cmd, f) for f in re.findall(r"(--[a-z][a-z-]+)", line.split(cmd, 1)[1])}
+        for cmd, args in re.findall(r"(rpl (?:notify|watch))([^`;&|\n]*)", text):         # the arguments of one command, not the rest of a sentence
+            used |= {(cmd, f) for f in re.findall(r"(--[a-z][a-z-]+)", args)}
         self.assertTrue(used, "the procedure shows no option")
         self.assertEqual(sorted(f for c, f in used if f not in ("--record", "--reason")), [])
         self.assertEqual([c for c, f in used if c == "rpl watch"], [], "rpl watch takes no option")
