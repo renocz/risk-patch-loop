@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -242,6 +243,86 @@ class Backoff(Base):
         self.code = 200
         self.assertEqual(self.go(1000.0 + notify.RETRY_BASE_S)["delivered"], [EV["key"]])
         self.assertNotIn("next_try", self.state(self.cfg_)[EV["key"]])
+
+
+class Concurrency(Base):
+    """Several processes write notifs.json (`rpl watch` every minute, `rpl notify`, the group apply). A run must not erase what another
+    run recorded while it was sending: losing a `queued` or `delivered` mark loses an alert or sends it twice for ever."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg_ = self.cfg([{"type": "webhook", "url": "https://hooks.example.test/x"}])
+        self.other = dict(EV, key="fix:app-2:CVE-2026-0002:1.0.0")
+
+    def test_a_run_that_overlaps_another_does_not_erase_its_state(self):
+        def during_the_send(url, body, headers, allow):
+            notify.deliver([self.other], self.cfg_, lambda *a: 200)          # another process delivers its own event meanwhile
+            return 500
+        notify.deliver([EV], self.cfg_, during_the_send)
+        state = self.state(self.cfg_)
+        self.assertTrue(state[self.other["key"]]["delivered"], "the other run's delivery mark was erased")
+        self.assertFalse(state[EV["key"]]["delivered"])
+        self.assertEqual(state[EV["key"]]["tries"], 1)
+
+    def test_two_overlapping_failures_both_stay_queued(self):
+        def during_the_send(url, body, headers, allow):
+            notify.deliver([self.other], self.cfg_, lambda *a: 500)
+            return 500
+        notify.deliver([EV], self.cfg_, during_the_send)
+        state = self.state(self.cfg_)
+        self.assertEqual(sorted(state), sorted([EV["key"], self.other["key"]]))
+        self.assertTrue(all(v["tries"] == 1 and not v["delivered"] for v in state.values()))
+
+    def test_a_lock_that_cannot_be_taken_never_stops_an_alert(self):
+        fcntl = __import__("fcntl")
+        os.makedirs(self.cfg_["state_dir"], exist_ok=True)
+        path = os.path.join(self.cfg_["state_dir"], "notifs.json.lock")
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)                                       # held by "another process" for the whole test
+        notify.LOCK_WAIT_S, old = 0.2, notify.LOCK_WAIT_S
+        self.addCleanup(setattr, notify, "LOCK_WAIT_S", old)
+        res = notify.deliver([EV], self.cfg_, lambda *a: 200)
+        self.assertEqual(res["delivered"], [EV["key"]])
+        self.assertTrue(self.state(self.cfg_)[EV["key"]]["delivered"])
+
+    def test_a_state_update_waits_for_the_lock_held_by_another_process(self):
+        fcntl = __import__("fcntl")
+        os.makedirs(self.cfg_["state_dir"], exist_ok=True)
+        lock_path = os.path.join(self.cfg_["state_dir"], "notifs.json.lock")
+        taken, hold_s = threading.Event(), 0.4
+
+        def holder():
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            taken.set()
+            time.sleep(hold_s)
+            os.close(fd)
+
+        t = threading.Thread(target=holder)
+        t.start()
+        self.addCleanup(t.join)
+        self.assertTrue(taken.wait(5))
+        start = time.monotonic()
+        notify._commit(os.path.join(self.cfg_["state_dir"], "notifs.json"), "k", {"delivered": True, "tries": 1})
+        self.assertGreaterEqual(time.monotonic() - start, hold_s * 0.6, "the update did not wait for the lock")
+
+    def test_the_lock_file_is_owner_only(self):
+        notify.deliver([EV], self.cfg_, lambda *a: 200)
+        mode = os.stat(os.path.join(self.cfg_["state_dir"], "notifs.json.lock")).st_mode & 0o777
+        self.assertEqual(mode & 0o077, 0)
+
+    def test_a_malformed_entry_is_replaced_not_a_crash(self):
+        os.makedirs(self.cfg_["state_dir"], exist_ok=True)
+        with open(os.path.join(self.cfg_["state_dir"], "notifs.json"), "w") as f:
+            json.dump({EV["key"]: {"unexpected": 1}, self.other["key"]: "text"}, f)
+        res = notify.deliver([EV, self.other], self.cfg_, lambda *a: 200)
+        self.assertEqual(sorted(res["delivered"]), sorted([EV["key"], self.other["key"]]))     # a duplicate is better than a lost alert
+
+    def test_the_state_file_keeps_every_key_after_many_runs(self):
+        for i in range(5):
+            notify.deliver([dict(EV, key=f"k{i}")], self.cfg_, lambda *a: 200)
+        self.assertEqual(len(self.state(self.cfg_)), 5)
 
 
 class NightlyMissing(unittest.TestCase):

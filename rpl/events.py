@@ -23,7 +23,7 @@ Limits, written down:
   - results older than the window, and a fix check older than the nightly run that should have replaced it, are not looked at;
   - "exclusion" covers only what proposals.json lists; findings accepted by hand (accepted.json) are not reported, the files do not say if they have a fix;
   - an application that appears and disappears between two runs is not seen; a removed one is never reported;
-  - "delivered" means the receiving service answered 2xx. Two runs at the same instant share notifs.json without a lock and can both send;
+  - "delivered" means the receiving service answered 2xx. Two runs at the same instant take a lock on notifs.json (rpl/notify.py) and cannot erase each other's marks, but both can still send the same event;
   - a group apply left unfinished is NOT reported here, on purpose: `rpl watch` does it and must not depend on this command.
 """
 import json
