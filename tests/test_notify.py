@@ -378,6 +378,72 @@ class FileStamp(Base):
             self.assertRegex(notify.file_stamp(path), r"^\d+$")             # falls back to the modification time in nanoseconds
 
 
+class PerChannel(Base):
+    """With two channels, a channel that confirmed an event is not sent it again because the other one failed."""
+
+    A, B = "https://a.example.test/hook-token-aaaa", "https://b.example.test/hook-token-bbbb"
+
+    def setUp(self):
+        super().setUp()
+        self.codes = {self.A: 200, self.B: 500}
+        self.calls = []
+
+        def poster(url, body, headers, allow):
+            self.calls.append(url)
+            return self.codes[url]
+        self.poster = poster
+        self.cfg_ = self.cfg([{"type": "webhook", "url": self.A}, {"type": "webhook", "url": self.B}])
+
+    def go(self, t):
+        return notify.deliver([EV], self.cfg_, self.poster, lambda: t)
+
+    def test_the_healthy_channel_is_not_sent_the_event_again(self):
+        self.go(1000.0)
+        self.codes[self.B] = 200
+        res = self.go(1000.0 + notify.RETRY_BASE_S + 1)
+        self.assertEqual(res["delivered"], [EV["key"]])
+        self.assertEqual(self.calls, [self.A, self.B, self.B])               # A once, B twice
+
+    def test_a_channel_that_keeps_failing_is_retried_and_the_other_is_not(self):
+        t = 1000.0
+        for _ in range(3):
+            self.go(t)
+            t += notify.RETRY_CAP_S
+        self.assertEqual(self.calls.count(self.A), 1)
+        self.assertEqual(self.calls.count(self.B), 3)
+
+    def test_the_state_file_names_no_url_or_token(self):
+        self.go(1000.0)
+        with open(os.path.join(self.cfg_["state_dir"], "notifs.json")) as f:
+            text = f.read()
+        for secret in ("hook-token-aaaa", "hook-token-bbbb", "example.test"):
+            self.assertNotIn(secret, text)
+        self.assertEqual(len(self.state(self.cfg_)[EV["key"]]["sent"]), 1)
+
+    def test_a_channel_added_later_still_gets_the_event(self):
+        self.go(1000.0)                                                      # A confirmed, B failed
+        self.codes["https://c.example.test/hook"] = 200
+        self.cfg_ = self.cfg([{"type": "webhook", "url": self.A}, {"type": "webhook", "url": self.B},
+                              {"type": "webhook", "url": "https://c.example.test/hook"}])
+        self.codes[self.B] = 200
+        self.go(1000.0 + notify.RETRY_BASE_S + 1)
+        self.assertIn("https://c.example.test/hook", self.calls)
+        self.assertEqual(self.calls.count(self.A), 1)
+
+    def test_a_delivered_event_forgets_the_per_channel_list(self):
+        self.go(1000.0)                                                      # A confirmed, B failed: the list is stored
+        self.assertIn("sent", self.state(self.cfg_)[EV["key"]])
+        self.codes[self.B] = 200
+        self.go(1000.0 + notify.RETRY_BASE_S + 1)
+        self.assertNotIn("sent", self.state(self.cfg_)[EV["key"]])
+
+    def test_an_event_nobody_confirmed_has_an_empty_list_and_goes_to_both(self):
+        self.codes[self.A] = 500
+        self.go(1000.0)
+        self.go(1000.0 + notify.RETRY_BASE_S + 1)
+        self.assertEqual((self.calls.count(self.A), self.calls.count(self.B)), (2, 2))
+
+
 class NightlyMissing(unittest.TestCase):
     def test_recent_run_gives_nothing(self):
         self.assertIsNone(notify.missing_run(1000.0, 1000.0 + 3600 * 20))
