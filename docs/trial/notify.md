@@ -40,7 +40,7 @@ Expect the entry open (`result` None; note its `state`: it may be `changing` rat
 
 Expect `exit 1`, a line `ALERT: rpl: the group apply ... never recorded a result`, and one message received. Run it once more: `exit 1`, no second message. Check that the message carries no secret and no path of your home directory.
 
-Then `rpl group ... --resume` as in Step 5, and `rpl watch`: expect `exit 0`. The group apply also sends its own message `the update failed (interrupted at ...) and was rolled back`, on the first resume only: a second apply of the same plan sends none and prints `notification not delivered yet`, a defect of `rpl/groupapply.py` found by this trial (see docs/results.md). Count messages accordingly. Repeat from "run B" (kill after `^parent: recreated`) to see a second instant. Check that after each `--resume` the three containers run their original images.
+Then `rpl group ... --resume` as in Step 5, and `rpl watch`: expect `exit 0`. The group apply also sends its own message `the update failed (interrupted at ...) and was rolled back`: one per apply, so one after each `--resume` (before the fix of 23 November 2026 only the first resume of a given plan sent one, and the later ones printed a wrong `notification not delivered yet`; see docs/results.md). Count messages accordingly. Repeat from "run B" (kill after `^parent: recreated`) to see a second instant. Check that after each `--resume` the three containers run their original images.
 
 ## 3. A journal that cannot be read
 

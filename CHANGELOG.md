@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Group apply: one notification per apply
+- The messages `ok`, `rolled-back` and `rollback-failed` of `rpl group` are now keyed on the journal entry of the apply that sends them (its `id`: parent plus time stamp), no longer on the plan fingerprint. `notify.deliver` sends one message per key for ever, and the same plan is applied again after every interruption and `--resume`: a second failed rollback of the same plan sent nothing, `rollback FAILED: CHECK BY HAND` included. Found by the supervised trial of 23 November 2026. Keys already in `notifs.json` stay valid and simply no longer match.
+- `_tell` told "notification not delivered yet (queued)" for a key that was already delivered (`deliver` leaves such a key out of all its lists); it now prints that only for a queued key, and says "given up" for one that reached `max_attempts`.
+- 10 new tests (`OneMessagePerApply` in `tests/test_group_apply.py`), 9 of them failing on the parent commit; suite 484, Python 3.9.6, 3.14.10 and 3.15.2 (CI covers 3.9 and 3.12). Each of the 6 new rules was removed in turn on a copy: 6 of 6 removals failed at least one test. `rpl/notify.py`, `rpl/watch.py`, `rpl/events.py` and the score are unchanged. See `docs/results.md`.
+
 ### Notifications: what the second round of measures changed
 - A text cut to fit a notification (a nightly failure reason over 300 characters) now ends with an ellipsis; it was cut silently. `rpl watch` names the cause of a `PermissionError` (the group journal is mode 0600: run it as the account that runs `rpl group`). `docs/trial/notify.md` says so. 3 new tests, failing before (suite: 474, Python 3.11, 3.12, 3.13).
 - Measured, not changed: a complete apply of the trial group takes 3.5 to 3.7 s (4 runs, tiny group, says nothing about a real one). Written as limits: `Retry-After` ignored, `max_attempts` counts runs not time (a minute timer gives up sending after about 20 minutes), a hanging channel holds a run 15 s. See `docs/results.md`.
