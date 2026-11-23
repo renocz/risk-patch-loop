@@ -58,10 +58,6 @@ class Unfinished(Base):
         rc, _ = self.run_watch()
         self.assertEqual((rc, self.posts), (0, []))
 
-    def test_a_failed_rollback_is_not_this_checks_business(self):
-        self.journal([self.entry(result="rollback FAILED: CHECK BY HAND")])       # it has a result, and the apply printed it
-        self.assertEqual(self.run_watch()[0], 0)
-
     def test_missing_journal_is_clean(self):
         self.assertEqual(self.run_watch()[0], 0)
 
@@ -153,6 +149,111 @@ class Permissions(Base):
         self.assertIn("account that runs `rpl group`", out)     # the journal is mode 0600: the timer must run as the account that applies
 
 
+class FailedRollback(Base):
+    """A rollback that failed (CHECK BY HAND) is an open incident for as long as its backup exists: the purge never deletes that backup, so a
+    human deleting it, once the services are repaired, is the acknowledgement. `rpl watch` re-presents it on every run, so a first delivery that
+    failed (the group apply gives its message to `deliver` once) is retried, and it uses the group apply's own key, so a delivered one is not sent
+    twice."""
+
+    def failed(self, id="proj-vpn-1-20261120-000000", backup="present", **extra):
+        path = os.path.join(self.tmp.name, "backups", "group-" + id)
+        if backup == "present":
+            os.makedirs(path)
+        e = self.entry(id=id, result="rollback FAILED: CHECK BY HAND", ts=extra.pop("ts", NOW - 100), state="rolled-back")
+        e["backup_root"] = path
+        e.update(extra)
+        return e
+
+    def test_a_failed_rollback_with_its_backup_still_there_is_reported_at_once(self):
+        e = self.failed()                                              # recent: the grace is for an apply in progress, this one is over
+        self.journal([e])
+        rc, out = self.run_watch()
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(self.posts), 1)
+        for text in (self.posts[0], out):
+            self.assertIn("proj-vpn-1", text)
+            self.assertIn(e["backup_root"], text)
+            self.assertIn("rollback", text)
+
+    def test_deleting_the_backup_closes_the_incident(self):
+        e = self.failed()
+        self.journal([e])
+        self.assertEqual(self.run_watch()[0], 1)
+        os.rmdir(e["backup_root"])
+        self.posts.clear()
+        self.assertEqual(self.run_watch(), (0, ""))
+        self.assertEqual(self.posts, [])
+
+    def test_it_is_reported_however_old_it_is(self):
+        self.journal([self.failed(ts=NOW - 400 * 86400)])
+        self.assertEqual(self.run_watch()[0], 1)
+
+    def test_a_failed_rollback_without_a_usable_backup_path_is_reported(self):
+        for backup_root in (None, "", 3):
+            with self.subTest(backup_root=backup_root):
+                e = self.failed(backup="absent")
+                e["backup_root"] = backup_root
+                self.journal([e])
+                self.assertEqual(self.run_watch()[0], 1)
+
+    def test_a_rollback_that_succeeded_and_a_success_are_not_incidents(self):
+        self.journal([self.entry(id="a", result="rollback ok"), self.entry(id="b", result="ok")])
+        self.assertEqual(self.run_watch()[0], 0)
+
+    def test_two_incidents_give_two_messages(self):
+        self.journal([self.failed(id="a"), self.entry(id="b")])        # one failed rollback, one apply that never finished
+        rc, _ = self.run_watch()
+        self.assertEqual((rc, len(self.posts)), (1, 2))
+
+    def test_the_alert_is_printed_on_every_run_but_sent_once(self):
+        self.journal([self.failed()])
+        first, second = self.run_watch(), self.run_watch()
+        self.assertEqual((first[0], second[0]), (1, 1))
+        self.assertIn("ALERT", second[1])
+        self.assertEqual(len(self.posts), 1)
+
+    def test_it_reads_the_journal_and_the_backup_path_and_nothing_else(self):
+        self.journal([self.failed()])
+        self.assertEqual(sorted(os.listdir(self.state)), [watch.JOURNAL])
+        self.assertEqual(self.run_watch()[0], 1)
+
+    def group_apply_tells(self, entry, code):
+        """Run the group apply's own message for this failed rollback, through the real `notify.deliver`; the channel is a double."""
+        sent = []
+        channel = mock.patch.dict(groupapply.notify.CHANNELS, {"webhook": lambda ch, text, poster: sent.append(text) or code})
+        with channel, mock.patch.object(groupapply, "_rollback", return_value=["dl: could not be restored"]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            groupapply._finish_rollback(dict(entry, result=None), self.cfg, None, "a control failed")
+        return sent
+
+    def test_it_uses_the_key_of_the_group_apply_message(self):
+        e = self.failed()
+        answer = {"delivered": [], "queued": [], "given_up": []}
+        with mock.patch.object(groupapply.notify, "deliver", return_value=answer) as deliver, \
+                mock.patch.object(groupapply, "_rollback", return_value=["dl: could not be restored"]), contextlib.redirect_stdout(io.StringIO()):
+            groupapply._finish_rollback(dict(e, result=None), self.cfg, None, "a control failed")
+        key_of_the_group_apply = deliver.call_args[0][0][0]["key"]
+        self.journal([e])
+        self.assertEqual([ev["key"] for ev in watch.events(watch.check(self.cfg, lambda: NOW), self.cfg)], [key_of_the_group_apply])
+
+    def test_a_message_the_group_apply_already_delivered_is_not_sent_again(self):
+        e = self.failed()
+        self.assertEqual(len(self.group_apply_tells(e, 200)), 1)
+        self.journal([e])
+        rc, _ = self.run_watch()
+        self.assertEqual((rc, self.posts), (1, []))                    # still an open incident, but already told
+
+    def test_a_message_the_group_apply_could_not_deliver_is_retried_by_watch(self):
+        e = self.failed()
+        self.assertEqual(len(self.group_apply_tells(e, 500)), 1)       # the channel was down when the rollback failed
+        self.journal([e])
+        self.now = NOW + notify.RETRY_CAP_S                            # well after the retry delay
+        self.run_watch()
+        self.assertEqual(len(self.posts), 1)
+        self.run_watch()
+        self.assertEqual(len(self.posts), 1)                           # and then once
+
+
 class Delivery(Base):
     def test_without_a_channel_the_alert_is_still_printed_and_the_exit_code_set(self):
         self.journal([self.entry()])
@@ -178,6 +279,12 @@ class Delivery(Base):
         with open(os.path.join(self.state, "notifs.json")) as f:
             state = json.load(f)
         self.assertTrue(all(v["delivered"] for v in state.values()))
+
+
+class Key(unittest.TestCase):
+    def test_the_key_format_is_fixed_because_it_is_stored_in_notifs_json(self):
+        self.assertEqual(watch.group_key("proj-vpn-1-20261120-000000", "rollback-failed"), "group:proj-vpn-1-20261120-000000:rollback-failed")
+        self.assertEqual(watch.group_key("a", "ok"), "group:a:ok")
 
 
 class Command(unittest.TestCase):
