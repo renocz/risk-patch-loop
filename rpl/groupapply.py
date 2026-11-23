@@ -406,12 +406,16 @@ def run_controls(plan, names, cfg, host):
 # ---- journal -------------------------------------------------------------------------------------------------------
 
 def _journal(cfg):
+    """The journal entries. No file is an empty journal. A file that cannot be read, or that is valid JSON but not a list of objects,
+    raises (OSError or ValueError): reading it as empty would hide an unfinished apply recorded in a damaged file."""
     try:
         with open(config.state(cfg, JOURNAL), encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
     except FileNotFoundError:
         return []
+    if not isinstance(data, list) or not all(isinstance(e, dict) for e in data):
+        raise ValueError(f"the group journal is not a list of objects: check {JOURNAL} in the state directory by hand")
+    return data
 
 
 def _save(cfg, data):
@@ -440,7 +444,10 @@ def _tell(cfg, key, text):
         return
     try:
         out = notify.deliver([{"key": key, "text": text}], cfg)
-        if key not in out["delivered"]:
+        # `deliver` leaves a key it already delivered out of every list: that is not "queued"
+        if key in out["given_up"]:
+            print("notification given up after repeated failures (see notifs.json)")
+        elif key in out["queued"]:
             print("notification not delivered yet (queued, see notifs.json)")
     except Exception as e:
         print("notification could not be sent: " + type(e).__name__)
@@ -550,17 +557,19 @@ def _rollback(entry, cfg, host):
 
 def _finish_rollback(entry, cfg, host, why):
     problems = _rollback(entry, cfg, host)
-    parent, fp = entry["plan"]["parent"], entry["plan"]["fingerprint"]
+    parent = entry["plan"]["parent"]
+    # The keys name THIS apply (its journal entry), not the plan: `notify.deliver` sends one message per key for ever, and the same plan
+    # is applied again after every interruption and `--resume`. A key built from the plan alone made the second failure silent.
     if problems:
         for p in problems:
             print("  " + p)
         print("ROLLBACK FAILED: CHECK BY HAND (backup kept in " + entry["backup_root"] + ")")
         _record(cfg, entry, result="rollback FAILED: CHECK BY HAND", problems=problems, why=why)
-        _tell(cfg, f"group:{parent}:{fp}:rollback-failed", f"rpl: group {parent}: the update failed ({why}) AND the rollback failed. Check by hand.")
+        _tell(cfg, f"group:{entry['id']}:rollback-failed", f"rpl: group {parent}: the update failed ({why}) AND the rollback failed. Check by hand.")
         return 4
     print("rollback ok: every member runs its original image again, configuration restored, controls passed")
     _record(cfg, entry, result="rollback ok", why=why)
-    _tell(cfg, f"group:{parent}:{fp}:rolled-back", f"rpl: group {parent}: the update failed ({why}) and was rolled back.")
+    _tell(cfg, f"group:{entry['id']}:rolled-back", f"rpl: group {parent}: the update failed ({why}) and was rolled back.")
     return 2
 
 
@@ -630,7 +639,7 @@ def _apply(a, cfg, host):
         if why is None:
             _record(cfg, entry, result="ok")
             print("OK")
-            _tell(cfg, f"group:{plan['parent']}:{plan['fingerprint']}:ok", f"rpl: group {plan['parent']} updated: "
+            _tell(cfg, f"group:{entry['id']}:ok", f"rpl: group {plan['parent']} updated: "
                   + ", ".join(f"{m['service']} -> {m['to']}" for m in plan["members"] if m["to"]))
             return 0
         print("FAILED: " + why + ": ROLLBACK")
@@ -704,10 +713,15 @@ def purge(cfg, days=None):
     the backup of a rollback that FAILED (it is then the only copy of the original configuration, and a human has not said it is done)."""
     days = float(cfg.get("group_backup_retention_days", 7) if days is None else days)
     try:
-        keep = {e.get("backup_root") for e in _journal(cfg) if e.get("result") is None or str(e.get("result")).startswith("rollback FAILED")}
+        protect = [e for e in _journal(cfg) if e.get("result") is None or str(e.get("result")).startswith("rollback FAILED")]
     except (OSError, ValueError):
         print("REFUSED: the group journal cannot be read, so the backups that must be kept cannot be told apart")
         return 1
+    if not all(isinstance(e.get("backup_root"), str) and e["backup_root"] for e in protect):
+        # the set to keep must not shrink in silence: an entry to protect that names no backup would let its backup be deleted
+        print("REFUSED: an unfinished or failed group apply in the journal has no backup path, so the backups that must be kept cannot be told apart")
+        return 1
+    keep = {e["backup_root"] for e in protect}
     removed = kept = 0
     for name in sorted(os.listdir(cfg["backup_dir"])) if os.path.isdir(cfg["backup_dir"]) else []:
         path = os.path.join(cfg["backup_dir"], name)

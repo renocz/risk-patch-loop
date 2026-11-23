@@ -590,6 +590,113 @@ class InterruptionAndResume(GroupCase):
         self.assert_nothing_changed()
 
 
+UNFINISHED = {"id": "proj-tunnel-1-20261120-000000", "result": None, "backup_root": "/nowhere/group-proj-tunnel-1-20261120-000000"}
+WRONG_SHAPE = {                                          # valid JSON, but not a list of objects
+    "an object": '{"result": null}',
+    "a list of strings": '["x"]',
+    "a list with a null": "[null]",
+    "a good entry followed by a bad one": json.dumps([UNFINISHED, "x"]),
+    "a number": "3",
+    "a string": '"unfinished"',
+}
+
+
+class JournalOfTheWrongShape(GroupCase):
+    """A journal that is valid JSON but not a list of objects used to be read as empty, so an unfinished apply recorded in a damaged file
+    was ignored and the next apply went ahead. It is refused like a torn file."""
+
+    def put(self, text):
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL), text)
+
+    def old_backup(self):
+        path = os.path.join(self.cfg["backup_dir"], "group-vpn-1-20260101-000000")
+        os.makedirs(path, exist_ok=True)
+        long_ago = time.time() - 30 * 86400
+        os.utime(path, (long_ago, long_ago))
+        return path
+
+    def purge(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = group.main(["--purge"], self.host)
+        return rc, out.getvalue()
+
+    def test_reading_it_raises(self):
+        for name, text in WRONG_SHAPE.items():
+            with self.subTest(name):
+                self.put(text)
+                with self.assertRaises(ValueError):
+                    groupapply._journal(self.cfg)
+                with self.assertRaises(ValueError):
+                    groupapply.unfinished(self.cfg)
+
+    def test_a_missing_journal_and_a_list_of_objects_still_read(self):
+        self.assertEqual(groupapply._journal(self.cfg), [])
+        self.put("[]")
+        self.assertEqual(groupapply._journal(self.cfg), [])
+        self.put(json.dumps([UNFINISHED]))
+        self.assertEqual(groupapply.unfinished(self.cfg), UNFINISHED)
+
+    def test_apply_is_refused_and_changes_nothing(self):
+        for name, text in WRONG_SHAPE.items():
+            with self.subTest(name):
+                self.put(text)
+                rc, out = self.run_group()
+                self.assertEqual(rc, 1, out)
+                self.assertIn("REFUSED", out)
+                self.assert_nothing_changed()
+                self.assertEqual(self.backups(), [])
+
+    def test_resume_is_refused_and_changes_nothing(self):
+        for name, text in WRONG_SHAPE.items():
+            with self.subTest(name):
+                self.put(text)
+                rc, out = self.run_group("--resume")
+                self.assertEqual(rc, 1, out)
+                self.assertIn("cannot be read", out)
+                self.assert_nothing_changed()
+
+    def test_the_plan_says_it_is_not_ready(self):
+        for name, text in WRONG_SHAPE.items():
+            with self.subTest(name):
+                self.put(text)
+                rc, out = self.run_group("--plan")
+                self.assertEqual(rc, 1, out)
+                self.assertIn("NOT READY", out)
+
+    def test_purge_is_refused_and_deletes_nothing(self):
+        for name, text in WRONG_SHAPE.items():
+            with self.subTest(name):
+                self.put(text)
+                old = self.old_backup()
+                rc, out = self.purge()
+                self.assertEqual(rc, 1, out)
+                self.assertIn("cannot be read", out)
+                self.assertTrue(os.path.isdir(old), "the backup that an unfinished apply may need is still there")
+
+    def test_purge_refuses_when_an_entry_to_protect_names_no_backup(self):
+        """The set of backups to keep must not become empty by accident: an unfinished apply, or a failed rollback, without a usable path."""
+        for name, entry in {"unfinished, no path": {"id": "a", "result": None},
+                            "unfinished, empty path": {"id": "a", "result": None, "backup_root": ""},
+                            "unfinished, path not a string": {"id": "a", "result": None, "backup_root": 3},
+                            "rollback failed, no path": {"id": "a", "result": "rollback FAILED: CHECK BY HAND"}}.items():
+            with self.subTest(name):
+                self.put(json.dumps([entry]))
+                old = self.old_backup()
+                rc, out = self.purge()
+                self.assertEqual(rc, 1, out)
+                self.assertIn("no backup path", out)
+                self.assertTrue(os.path.isdir(old))
+
+    def test_purge_still_works_with_a_journal_of_finished_applies(self):
+        self.put(json.dumps([{"id": "a", "result": "ok"}, {"id": "b", "result": "rollback ok", "backup_root": "/nowhere/x"}]))
+        old = self.old_backup()
+        rc, out = self.purge()
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(os.path.exists(old))
+
+
 class Purge(GroupCase):
     def test_old_backups_are_deleted_recent_and_unfinished_ones_are_kept(self):
         d = self.cfg["backup_dir"]
@@ -645,6 +752,117 @@ class Purge(GroupCase):
         rc, kept, _ = self.aged_backup_after()
         self.assertEqual(rc, 2)
         self.assertFalse(kept)
+
+
+class OneMessagePerApply(GroupCase):
+    """The messages of the group apply are keyed on the journal entry of THAT apply. `notify.deliver` sends one message per key, forever: a
+    key built from the plan alone silenced every later apply of the same plan, which is exactly what an interruption plus `--resume` gives.
+
+    The delivery is the real `notify.deliver` (with its `notifs.json`); only the channel is a double that records the texts."""
+
+    def setUp(self):
+        super().setUp()
+        self.configure(notifications={"channels": [{"type": "webhook", "url": "https://hooks.example.test/x"}]})
+        self.sent = []
+        channel = mock.patch.dict(groupapply.notify.CHANNELS, {"webhook": lambda ch, text, poster: self.sent.append(text) or 200})
+        channel.start()
+        self.addCleanup(channel.stop)
+
+    def texts(self, word):
+        return [t for t in self.sent if word in t]
+
+    def interrupt(self):
+        def boom():
+            self.host.hooks.pop(("up", "idx"))
+            raise KeyboardInterrupt()
+        self.host.hooks[("up", "idx")] = boom
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_group()
+
+    def tell(self, **lists):
+        """What `_tell` prints when `notify.deliver` answers with these lists."""
+        answer = {"delivered": [], "queued": [], "given_up": []}
+        answer.update(lists)
+        out = io.StringIO()
+        with mock.patch.object(groupapply.notify, "deliver", return_value=answer), contextlib.redirect_stdout(out):
+            groupapply._tell(self.cfg, "k", "t")
+        return out.getvalue()
+
+    def test_two_interrupted_applies_of_the_same_plan_each_announce_their_rollback(self):
+        fingerprints = []
+        for _ in range(2):
+            self.interrupt()
+            fingerprints.append(self.journal()[-1]["plan"]["fingerprint"])
+            self.assertEqual(self.run_group("--resume")[0], 0)
+        self.assertEqual(fingerprints[0], fingerprints[1], "the same plan both times: that is the case")
+        self.assertEqual(len(self.texts("rolled back")), 2)
+
+    def test_two_failed_applies_of_the_same_plan_each_announce_their_rollback(self):
+        self.host.fail_up_images.add(NEW_TUNNEL)
+        for _ in range(2):
+            self.assertEqual(self.run_group()[0], 2)
+        self.assertEqual(len(self.texts("rolled back")), 2)
+
+    def test_two_failed_rollbacks_of_the_same_plan_are_both_announced(self):
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        plan = {"parent": PARENT, "fingerprint": "f" * 16}
+        with mock.patch.object(groupapply, "_rollback", return_value=["dl: could not be restored"]), contextlib.redirect_stdout(io.StringIO()):
+            for n in (1, 2):
+                entry = {"id": f"{PARENT}-2026112{n}-000000", "plan": plan, "result": None,
+                         "backup_root": os.path.join(self.dir, "backups", f"group-{n}")}
+                self.assertEqual(groupapply._finish_rollback(entry, self.cfg, self.host, "a control failed"), 4)
+        self.assertEqual(len(self.texts("rollback failed")), 2, "a rollback that failed (CHECK BY HAND) is never silent")
+
+    def key_of_the_last_message(self, *flags):
+        answer = {"delivered": [], "queued": [], "given_up": []}
+        with mock.patch.object(groupapply.notify, "deliver", return_value=answer) as deliver:
+            self.run_group(*flags)
+        return deliver.call_args[0][0][0]["key"]
+
+    def test_the_key_of_the_success_message_names_the_apply(self):
+        key = self.key_of_the_last_message()
+        entry_id = self.journal()[-1]["id"]
+        self.assertIn(entry_id, key)
+        self.assertTrue(key.endswith(":ok"), key)
+        self.assertGreater(len(entry_id), len(PARENT), "the identifier carries a time stamp, not only the parent")
+
+    def test_the_key_of_the_rollback_message_names_the_apply(self):
+        self.host.fail_up_images.add(NEW_TUNNEL)
+        key = self.key_of_the_last_message()
+        self.assertIn(self.journal()[-1]["id"], key)
+        self.assertTrue(key.endswith(":rolled-back"), key)
+
+    def test_the_key_of_the_failed_rollback_message_names_the_apply(self):
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        entry = {"id": f"{PARENT}-20261121-000000", "plan": {"parent": PARENT, "fingerprint": "f" * 16}, "result": None,
+                 "backup_root": os.path.join(self.dir, "backups", "group-1")}
+        answer = {"delivered": [], "queued": [], "given_up": []}
+        with mock.patch.object(groupapply, "_rollback", return_value=["dl: could not be restored"]), contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(groupapply.notify, "deliver", return_value=answer) as deliver:
+            groupapply._finish_rollback(entry, self.cfg, self.host, "a control failed")
+        key = deliver.call_args[0][0][0]["key"]
+        self.assertIn(entry["id"], key)
+        self.assertTrue(key.endswith(":rollback-failed"), key)
+
+    def test_a_message_already_delivered_prints_nothing(self):
+        self.assertEqual(self.tell(), "", "notify.deliver leaves an already delivered key out of its lists")
+        self.assertEqual(self.tell(delivered=["k"]), "")
+
+    def test_telling_the_same_key_twice_is_quiet_the_second_time(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            groupapply._tell(self.cfg, "k", "t")
+            groupapply._tell(self.cfg, "k", "t")
+        self.assertEqual(out.getvalue(), "")
+        self.assertEqual(self.sent, ["t"], "one message per key")
+
+    def test_a_queued_message_says_it_is_queued(self):
+        self.assertIn("queued", self.tell(queued=["k"]))
+
+    def test_a_message_given_up_says_so_and_not_that_it_is_queued(self):
+        out = self.tell(given_up=["k"])
+        self.assertIn("given up", out)
+        self.assertNotIn("queued", out)
 
 
 class TreeCopy(unittest.TestCase):

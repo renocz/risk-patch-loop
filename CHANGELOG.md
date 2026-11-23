@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Group apply: one notification per apply
+- The messages `ok`, `rolled-back` and `rollback-failed` of `rpl group` are now keyed on the journal entry of the apply that sends them (its `id`: parent plus time stamp), no longer on the plan fingerprint. `notify.deliver` sends one message per key for ever, and the same plan is applied again after every interruption and `--resume`: a second failed rollback of the same plan sent nothing, `rollback FAILED: CHECK BY HAND` included. Found by the supervised trial of 23 November 2026. Keys already in `notifs.json` stay valid and simply no longer match.
+- `_tell` told "notification not delivered yet (queued)" for a key that was already delivered (`deliver` leaves such a key out of all its lists); it now prints that only for a queued key, and says "given up" for one that reached `max_attempts`.
+- 10 new tests (`OneMessagePerApply` in `tests/test_group_apply.py`), 9 of them failing on the parent commit; suite 484, Python 3.9.6, 3.14.10 and 3.15.2 (CI covers 3.9 and 3.12). Each of the 6 new rules was removed in turn on a copy: 6 of 6 removals failed at least one test. `rpl/notify.py`, `rpl/watch.py`, `rpl/events.py` and the score are unchanged. See `docs/results.md`.
+
 ### Notifications: what the second round of measures changed
 - A text cut to fit a notification (a nightly failure reason over 300 characters) now ends with an ellipsis; it was cut silently. `rpl watch` names the cause of a `PermissionError` (the group journal is mode 0600: run it as the account that runs `rpl group`). `docs/trial/notify.md` says so. 3 new tests, failing before (suite: 474, Python 3.11, 3.12, 3.13).
 - Measured, not changed: a complete apply of the trial group takes 3.5 to 3.7 s (4 runs, tiny group, says nothing about a real one). Written as limits: `Retry-After` ignored, `max_attempts` counted runs not time (a minute timer gave up sending after about 20 minutes: fixed in "retries by elapsed time" below), a hanging channel holds a run 15 s. See `docs/results.md`.
@@ -16,6 +21,10 @@
 - Not changed: the score, the group apply. Noticed, not fixed (separate tasks): `groupapply._journal` reads a journal that is valid JSON but not a list as empty; the group apply's `rolled-back` and `rollback-failed` messages are keyed on the plan fingerprint, so a second failure of the same plan sends nothing (found by the supervised trial).
 
 - `docs/trial/notify.md`: the procedure for a supervised trial of `rpl watch` and `rpl notify` (real webhook, real SIGTERM, a timer alone, a channel cut during an event, the nightly script under `set -e`), revised after a second opinion. Run once on 23 November 2026 with a loopback receiver (`docs/results.md`), and corrected from what that run found; 4 tests keep its options and its nightly script valid (suite: 471, Python 3.11, 3.12, 3.13).
+
+### Group apply: a journal of the wrong shape is refused
+- `groupapply._journal` read a `group-journal.json` that is valid JSON but not a list (for example `{"result": null}`) as empty: `unfinished` saw nothing, so an apply did not refuse and a purge could delete a backup an unfinished apply needs. It now raises `ValueError` for a top level that is not a list and for entries that are not objects (a list of strings used to raise `AttributeError`), and `rpl group` (apply, `--plan`), `--resume` and `--purge` refuse it like a torn file. `--purge` also refuses when an unfinished or failed entry names no usable backup path. A missing file is still an empty journal.
+- 8 new tests (`JournalOfTheWrongShape`), 6 of them failing on the parent commit; suite 482, Python 3.9.6, 3.14.10 and 3.15.2 (CI covers 3.9 and 3.12). Each of 7 rules was removed in turn on a copy: 7 of 7 removals failed at least one test. `rpl/watch.py`, `rpl/events.py`, `rpl/notify.py` and the score are unchanged; the README limits do not change. See `docs/results.md`.
 
 ### Earlier in this release
 
