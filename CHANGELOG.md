@@ -8,6 +8,8 @@
 - Not done, written in README "Known limits" and `docs/results.md`: nothing has run from a real timer or against a real channel; a first run announces no existing application; a nightly job that does not call `--record` reads as missing; no lock around `notifs.json`; accepted findings (`accepted.json`) are not reported as exclusions; a per-channel memory is still missing. 58 new tests, written before the code (suite: 467, Python 3.11, 3.12 and 3.13; 3.9 not run, CI will).
 - Not changed: the score, the group apply. Noticed, not fixed: `groupapply._journal` reads a journal that is valid JSON but not a list as empty.
 
+- `docs/trial/notify.md`: the procedure for a supervised trial of `rpl watch` and `rpl notify` (real webhook, real SIGTERM, a timer alone, a channel cut during an event, the nightly script under `set -e`), revised after a second opinion. **Not run yet**; 4 tests keep its options and its nightly script valid (suite: 471, Python 3.11, 3.12, 3.13).
+
 ### Earlier in this release
 
 Integration tests for the parts 0.9.0 left untested, the defects they exposed, and repository hygiene.

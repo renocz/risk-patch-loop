@@ -15,6 +15,41 @@ def read(path):
         return f.read()
 
 
+NOTIFY = os.path.join(KIT, "notify.md")
+
+
+class NotifyTrial(unittest.TestCase):
+    """The procedure for trying `rpl watch` and `rpl notify` on a real host must name commands and options that exist."""
+
+    def test_the_procedure_exists_and_is_linked_from_the_trial_readme(self):
+        self.assertTrue(os.path.exists(NOTIFY))
+        self.assertIn("notify.md", read(PROCEDURE))
+
+    def test_every_option_it_gives_to_rpl_notify_and_watch_exists(self):
+        text = read(NOTIFY)
+        used = set()
+        for line in text.splitlines():
+            for cmd in ("rpl notify", "rpl watch"):
+                if cmd in line:
+                    used |= {(cmd, f) for f in re.findall(r"(--[a-z][a-z-]+)", line.split(cmd, 1)[1])}
+        self.assertTrue(used, "the procedure shows no option")
+        self.assertEqual(sorted(f for c, f in used if f not in ("--record", "--reason")), [])
+        self.assertEqual([c for c, f in used if c == "rpl watch"], [], "rpl watch takes no option")
+
+    def test_the_nightly_script_it_shows_parses_and_records_on_failure(self):
+        blocks = re.findall(r"```bash\n(#!/bin/bash\n.*?)```", read(NOTIFY), re.S)
+        self.assertEqual(len(blocks), 1)
+        self.assertIn("--record failed", blocks[0])
+        self.assertIn("trap", blocks[0])
+        if shutil.which("bash") is None:
+            self.skipTest("no bash on this machine")
+        r = subprocess.run(["bash", "-n"], input=blocks[0], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_it_says_what_it_does_not_cover(self):
+        self.assertIn("does not show", read(NOTIFY))
+
+
 class TrialKit(unittest.TestCase):
     def test_the_setup_script_is_executable_and_parses(self):
         self.assertTrue(os.access(SCRIPT, os.X_OK))

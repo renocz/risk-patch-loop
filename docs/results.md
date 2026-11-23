@@ -161,7 +161,7 @@ Run in a cloud sandbox, not on the author's host: Linux 6.18, ext file system, n
 
 Two additions on top of `rpl/notify.py`: `rpl/watch.py` (a group apply that never recorded a result) and `rpl/events.py` (collects events and calls `notify.deliver`). Written test first: the tests were run against stubs returning nothing and failed on their assertions before any rule existed (`tests/test_watch.py`: 22 tests, 19 failing or erroring; `tests/test_events.py`: 35 tests, 26 failing), then the code was written.
 
-- Suite: 467 tests (409 before), passing on Python 3.11.2, 3.12 and 3.13.18. Not run on 3.9 (not installed in the sandbox); the new files were only checked to parse with 3.9 syntax. CI runs 3.9 and 3.12.
+- Suite: 471 tests (409 before; 4 of them keep `docs/trial/notify.md` valid), passing on Python 3.11.2, 3.12 and 3.13.18. Not run on 3.9 (not installed in the sandbox); the new files were only checked to parse with 3.9 syntax. CI runs 3.9 and 3.12.
 - Mutation check, by hand: 15 rules of the two modules were removed one at a time (the open-entry test, the future-timestamp guard, the unreadable-journal paths, the exit codes, the baseline, the delivered-only memory, the window, the proven-fix filter, the catch-all around a source) and the tests rerun: 14 failed at first, the 15th (the catch-all that turns a crashing source into an error event) survived, a test was added, and all 15 now fail at least one test.
 - One test writes an entry with the group apply's own `_record` and checks that `rpl watch` sees it open, then closed.
 
