@@ -81,6 +81,16 @@ class Nightly(Base):
         events.record(self.cfg, "ok", "", lambda: NOW + 60)
         self.assertEqual(events.collect(dict(self.cfg), lambda: NOW + 120), [])
 
+    def test_a_long_reason_is_cut_with_a_visible_mark(self):
+        events.record(self.cfg, "failed", "x" * 900, lambda: NOW)
+        text = events.collect(self.cfg, lambda: NOW)[0]["text"]
+        self.assertIn("\u2026", text)                      # the reader must see that something was cut
+        self.assertLess(len(text), 400)
+
+    def test_a_short_reason_is_not_marked(self):
+        events.record(self.cfg, "failed", "scan crashed", lambda: NOW)
+        self.assertNotIn("\u2026", events.collect(self.cfg, lambda: NOW)[0]["text"])
+
     def test_record_refuses_an_unknown_status(self):
         with self.assertRaises(ValueError):
             events.record(self.cfg, "fine", "", lambda: NOW)

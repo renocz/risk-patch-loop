@@ -142,6 +142,16 @@ class Unreadable(Base):
         self.assertEqual(rc, 2)
 
 
+class Permissions(Base):
+    def test_a_journal_another_account_wrote_says_so(self):
+        self.journal([self.entry()])
+        with mock.patch("builtins.open", side_effect=PermissionError(13, "denied")):
+            rc, out = self.run_watch()
+        self.assertEqual(rc, 2)
+        self.assertIn("PermissionError", out)
+        self.assertIn("account that runs `rpl group`", out)     # the journal is mode 0600: the timer must run as the account that applies
+
+
 class Delivery(Base):
     def test_without_a_channel_the_alert_is_still_printed_and_the_exit_code_set(self):
         self.journal([self.entry()])

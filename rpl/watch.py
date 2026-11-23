@@ -14,6 +14,8 @@ Limits, written down:
   - the journal is read with plain file access, not under the shared lock: a read during a write sees the old or the new file (the writer replaces it
     atomically), never a half file;
   - a failed delivery is retried on the next run only while the entry is still open; once `--resume` closes it nothing more is sent;
+  - the journal is written mode 0600 by the account that runs `rpl group`: a timer under another account gets a PermissionError and exit 2 (reported,
+    never "OK"), so run it as the account that applies;
   - it does not run Docker and does not know whether services are really stopped: it reports the record, not the state of the host;
   - it depends on notifs.json (shared with `rpl notify`) for "one message per entry"; two runs at the same instant can both send.
 """
@@ -37,6 +39,8 @@ def _read(cfg):
             data = json.load(f)
     except FileNotFoundError:
         return [], None
+    except PermissionError:
+        return None, ("cannot be read (PermissionError: the journal is mode 0600, so run `rpl watch` as the account that runs `rpl group`)")
     except (OSError, ValueError) as e:
         return None, f"cannot be read ({type(e).__name__})"
     if not isinstance(data, list) or not all(isinstance(e, dict) for e in data):
