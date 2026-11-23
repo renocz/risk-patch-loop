@@ -33,16 +33,13 @@ import os
 import sys
 import time
 
-from . import config, notify
+from . import config, groupmsg, notify
 
 JOURNAL = "group-journal.json"          # the name groupapply.py writes (a test keeps the two equal)
 DEFAULT_GRACE_MIN = 60
 
 
-def group_key(entry_id, outcome):
-    """The notification key of a group apply: one per apply (its journal entry id) and outcome ("ok", "rolled-back", "rollback-failed").
-    The group apply and `rpl watch` both use it, so `rpl.notify` sends a given message once, whoever gives it first."""
-    return f"group:{entry_id}:{outcome}"
+group_key = groupmsg.group_key              # the group apply, `rpl watch` and `rpl notify` all use this one key builder
 CLOCK_SKEW_S = 300                      # a start time further in the future than this is not trusted
 
 

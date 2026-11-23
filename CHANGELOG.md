@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Group apply: the "updated" and "rolled back" messages are retried
+- The group apply gave its `updated` and `rolled back` messages to `notify.deliver` once; `deliver` retries only what it is given, so one whose first delivery failed was never sent again (seen on the host, 23 November 2026). `rpl notify` now produces them again from `group-journal.json` (entries with result `ok` or `rollback ok`, younger than `events_window_hours`, 72 h) with the same key and the same text as the apply, so a message that arrived is not sent twice and one that did not is retried. A failed rollback stays `rpl watch`'s (it never expires); a journal that cannot be read gives nothing here, `rpl watch` says so.
+- New module `rpl/groupmsg.py`: the keys and texts of the three group messages in one place (the apply, `rpl watch` and `rpl notify` all use it; it imports nothing from rpl, so `rpl watch` stays standalone). `watch.group_key` is kept as an alias.
+- 12 new tests (`RetriedByTheCollector` 8, `test_groupmsg` 4), 6 failing or erroring before the code (the others pin the texts, keys and the module's isolation); one test that said the collector must not read the group journal was replaced by one that checks `rpl watch` does not depend on the collector or the group apply. Of 11 removals of the rules, 10 fail a test and 1 survives (an equivalent mutant). Suite 542, Python 3.11, 3.12, 3.13.
+- Not done: delivery on a real host, a result older than 72 hours is not replayed, and the journal keeps 100 entries.
+
 ### Notifications: notifs.json is owner-only
 - `notifs.json` was created with the caller's umask (0644 under the common 022); only `notifs.json.lock` was forced to 0600. It holds container and image names and the last error of each channel. It is now written 0600 (`os.open` with 0600 and `fchmod`, so a leftover temporary file with loose rights does not leak into it), and an existing world-readable one is tightened at its next write. Found by the replay of #19 and #20 on the host.
 - 3 new tests, 3 failing before; suite 529, Python 3.11, 3.12, 3.13. Of 2 removals of its rules, 1 fails a test and 1 survives (an equivalent mutant: `fchmod` restores 0600 anyway). The replay on the host of #19 and #20 is recorded in `docs/results.md`: failed rollback re-presented once and closed when the backup was deleted, no mark lost over 400 concurrent turns, a held lock does not stop an alert (5.1 s).
