@@ -590,6 +590,113 @@ class InterruptionAndResume(GroupCase):
         self.assert_nothing_changed()
 
 
+UNFINISHED = {"id": "proj-tunnel-1-20261120-000000", "result": None, "backup_root": "/nowhere/group-proj-tunnel-1-20261120-000000"}
+WRONG_SHAPE = {                                          # valid JSON, but not a list of objects
+    "an object": '{"result": null}',
+    "a list of strings": '["x"]',
+    "a list with a null": "[null]",
+    "a good entry followed by a bad one": json.dumps([UNFINISHED, "x"]),
+    "a number": "3",
+    "a string": '"unfinished"',
+}
+
+
+class JournalOfTheWrongShape(GroupCase):
+    """A journal that is valid JSON but not a list of objects used to be read as empty, so an unfinished apply recorded in a damaged file
+    was ignored and the next apply went ahead. It is refused like a torn file."""
+
+    def put(self, text):
+        os.makedirs(self.cfg["state_dir"], exist_ok=True)
+        self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL), text)
+
+    def old_backup(self):
+        path = os.path.join(self.cfg["backup_dir"], "group-vpn-1-20260101-000000")
+        os.makedirs(path, exist_ok=True)
+        long_ago = time.time() - 30 * 86400
+        os.utime(path, (long_ago, long_ago))
+        return path
+
+    def purge(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = group.main(["--purge"], self.host)
+        return rc, out.getvalue()
+
+    def test_reading_it_raises(self):
+        for name, text in WRONG_SHAPE.items():
+            with self.subTest(name):
+                self.put(text)
+                with self.assertRaises(ValueError):
+                    groupapply._journal(self.cfg)
+                with self.assertRaises(ValueError):
+                    groupapply.unfinished(self.cfg)
+
+    def test_a_missing_journal_and_a_list_of_objects_still_read(self):
+        self.assertEqual(groupapply._journal(self.cfg), [])
+        self.put("[]")
+        self.assertEqual(groupapply._journal(self.cfg), [])
+        self.put(json.dumps([UNFINISHED]))
+        self.assertEqual(groupapply.unfinished(self.cfg), UNFINISHED)
+
+    def test_apply_is_refused_and_changes_nothing(self):
+        for name, text in WRONG_SHAPE.items():
+            with self.subTest(name):
+                self.put(text)
+                rc, out = self.run_group()
+                self.assertEqual(rc, 1, out)
+                self.assertIn("REFUSED", out)
+                self.assert_nothing_changed()
+                self.assertEqual(self.backups(), [])
+
+    def test_resume_is_refused_and_changes_nothing(self):
+        for name, text in WRONG_SHAPE.items():
+            with self.subTest(name):
+                self.put(text)
+                rc, out = self.run_group("--resume")
+                self.assertEqual(rc, 1, out)
+                self.assertIn("cannot be read", out)
+                self.assert_nothing_changed()
+
+    def test_the_plan_says_it_is_not_ready(self):
+        for name, text in WRONG_SHAPE.items():
+            with self.subTest(name):
+                self.put(text)
+                rc, out = self.run_group("--plan")
+                self.assertEqual(rc, 1, out)
+                self.assertIn("NOT READY", out)
+
+    def test_purge_is_refused_and_deletes_nothing(self):
+        for name, text in WRONG_SHAPE.items():
+            with self.subTest(name):
+                self.put(text)
+                old = self.old_backup()
+                rc, out = self.purge()
+                self.assertEqual(rc, 1, out)
+                self.assertIn("cannot be read", out)
+                self.assertTrue(os.path.isdir(old), "the backup that an unfinished apply may need is still there")
+
+    def test_purge_refuses_when_an_entry_to_protect_names_no_backup(self):
+        """The set of backups to keep must not become empty by accident: an unfinished apply, or a failed rollback, without a usable path."""
+        for name, entry in {"unfinished, no path": {"id": "a", "result": None},
+                            "unfinished, empty path": {"id": "a", "result": None, "backup_root": ""},
+                            "unfinished, path not a string": {"id": "a", "result": None, "backup_root": 3},
+                            "rollback failed, no path": {"id": "a", "result": "rollback FAILED: CHECK BY HAND"}}.items():
+            with self.subTest(name):
+                self.put(json.dumps([entry]))
+                old = self.old_backup()
+                rc, out = self.purge()
+                self.assertEqual(rc, 1, out)
+                self.assertIn("no backup path", out)
+                self.assertTrue(os.path.isdir(old))
+
+    def test_purge_still_works_with_a_journal_of_finished_applies(self):
+        self.put(json.dumps([{"id": "a", "result": "ok"}, {"id": "b", "result": "rollback ok", "backup_root": "/nowhere/x"}]))
+        old = self.old_backup()
+        rc, out = self.purge()
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(os.path.exists(old))
+
+
 class Purge(GroupCase):
     def test_old_backups_are_deleted_recent_and_unfinished_ones_are_kept(self):
         d = self.cfg["backup_dir"]

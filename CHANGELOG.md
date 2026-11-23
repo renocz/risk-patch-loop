@@ -14,6 +14,10 @@
 
 - `docs/trial/notify.md`: the procedure for a supervised trial of `rpl watch` and `rpl notify` (real webhook, real SIGTERM, a timer alone, a channel cut during an event, the nightly script under `set -e`), revised after a second opinion. Run once on 23 November 2026 with a loopback receiver (`docs/results.md`), and corrected from what that run found; 4 tests keep its options and its nightly script valid (suite: 471, Python 3.11, 3.12, 3.13).
 
+### Group apply: a journal of the wrong shape is refused
+- `groupapply._journal` read a `group-journal.json` that is valid JSON but not a list (for example `{"result": null}`) as empty: `unfinished` saw nothing, so an apply did not refuse and a purge could delete a backup an unfinished apply needs. It now raises `ValueError` for a top level that is not a list and for entries that are not objects (a list of strings used to raise `AttributeError`), and `rpl group` (apply, `--plan`), `--resume` and `--purge` refuse it like a torn file. `--purge` also refuses when an unfinished or failed entry names no usable backup path. A missing file is still an empty journal.
+- 8 new tests (`JournalOfTheWrongShape`), 6 of them failing on the parent commit; suite 482, Python 3.9.6, 3.14.10 and 3.15.2 (CI covers 3.9 and 3.12). Each of 7 rules was removed in turn on a copy: 7 of 7 removals failed at least one test. `rpl/watch.py`, `rpl/events.py`, `rpl/notify.py` and the score are unchanged; the README limits do not change. See `docs/results.md`.
+
 ### Earlier in this release
 
 Integration tests for the parts 0.9.0 left untested, the defects they exposed, and repository hygiene.

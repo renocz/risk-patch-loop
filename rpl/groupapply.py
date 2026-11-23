@@ -406,12 +406,16 @@ def run_controls(plan, names, cfg, host):
 # ---- journal -------------------------------------------------------------------------------------------------------
 
 def _journal(cfg):
+    """The journal entries. No file is an empty journal. A file that cannot be read, or that is valid JSON but not a list of objects,
+    raises (OSError or ValueError): reading it as empty would hide an unfinished apply recorded in a damaged file."""
     try:
         with open(config.state(cfg, JOURNAL), encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
     except FileNotFoundError:
         return []
+    if not isinstance(data, list) or not all(isinstance(e, dict) for e in data):
+        raise ValueError(f"the group journal is not a list of objects: check {JOURNAL} in the state directory by hand")
+    return data
 
 
 def _save(cfg, data):
@@ -704,10 +708,15 @@ def purge(cfg, days=None):
     the backup of a rollback that FAILED (it is then the only copy of the original configuration, and a human has not said it is done)."""
     days = float(cfg.get("group_backup_retention_days", 7) if days is None else days)
     try:
-        keep = {e.get("backup_root") for e in _journal(cfg) if e.get("result") is None or str(e.get("result")).startswith("rollback FAILED")}
+        protect = [e for e in _journal(cfg) if e.get("result") is None or str(e.get("result")).startswith("rollback FAILED")]
     except (OSError, ValueError):
         print("REFUSED: the group journal cannot be read, so the backups that must be kept cannot be told apart")
         return 1
+    if not all(isinstance(e.get("backup_root"), str) and e["backup_root"] for e in protect):
+        # the set to keep must not shrink in silence: an entry to protect that names no backup would let its backup be deleted
+        print("REFUSED: an unfinished or failed group apply in the journal has no backup path, so the backups that must be kept cannot be told apart")
+        return 1
+    keep = {e["backup_root"] for e in protect}
     removed = kept = 0
     for name in sorted(os.listdir(cfg["backup_dir"])) if os.path.isdir(cfg["backup_dir"]) else []:
         path = os.path.join(cfg["backup_dir"], name)
