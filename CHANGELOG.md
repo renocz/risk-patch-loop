@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Notifications, step 5 of the v0.10 plan
+- `rpl watch` (`rpl/watch.py`): reports every entry of `group-journal.json` that has no result, a group apply that never finished (a process stopped by SIGTERM prints nothing). It reads that file only: no dependency on the nightly job, on `rpl notify`, on Docker or on any other state file. Exit 0 clean, 1 unfinished, 2 journal unreadable (a journal that is not a list of objects counts as unreadable, never as clean). The alert is always printed, and delivered through `rpl/notify.py` when channels are configured, one message per journal entry. An entry younger than `group_unfinished_grace_minutes` (60) is taken for an apply in progress; a start time that is missing, not a number or in the future is reported.
+- `rpl notify` (`rpl/events.py`): collects events from the other modules' state files and hands them to `notify.deliver`: nightly run missing or failed, patch results (last 72 h), an image excluded from proposals although a fix is proven, a new application, an unreadable or malformed state file (an error event, never silence). Events are recomputed on every run so a failed delivery is retried; only new applications are remembered (`apps-known.json`), after delivery. `rpl notify --record ok|failed [--reason TEXT]` is the nightly job's last line (`nightly.json`). New settings: `group_unfinished_grace_minutes`, `nightly_max_hours`, `events_window_hours`.
+- Not done, written in README "Known limits" and `docs/results.md`: nothing has run from a real timer or against a real channel; a first run announces no existing application; a nightly job that does not call `--record` reads as missing; no lock around `notifs.json`; accepted findings (`accepted.json`) are not reported as exclusions; a per-channel memory is still missing. 58 new tests, written before the code (suite: 467, Python 3.11, 3.12 and 3.13; 3.9 not run, CI will).
+- Not changed: the score, the group apply. Noticed, not fixed: `groupapply._journal` reads a journal that is valid JSON but not a list as empty.
+
+### Earlier in this release
+
 Integration tests for the parts 0.9.0 left untested, the defects they exposed, and repository hygiene.
 
 ### Groups

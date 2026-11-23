@@ -157,6 +157,18 @@ Run in a cloud sandbox, not on the author's host: Linux 6.18, ext file system, n
 
 **Not verified:** two real updates competing on a real Docker host; a nightly job and a manual run colliding; NFS or any network file system; macOS or another Unix; Windows (no `fcntl`: the code refuses, only simulated by a test); runners under different user accounts (the lock file is created with mode 0600, so a second account is refused rather than admitted, by reading the code, not by a test). The test "a child process does not keep the lock" passes partly because Python closes inherited descriptors when it starts a process.
 
+## Notifications: `rpl watch` and `rpl notify` (23 November 2026)
+
+Two additions on top of `rpl/notify.py`: `rpl/watch.py` (a group apply that never recorded a result) and `rpl/events.py` (collects events and calls `notify.deliver`). Written test first: the tests were run against stubs returning nothing and failed on their assertions before any rule existed (`tests/test_watch.py`: 22 tests, 19 failing or erroring; `tests/test_events.py`: 35 tests, 26 failing), then the code was written.
+
+- Suite: 467 tests (409 before), passing on Python 3.11.2, 3.12 and 3.13.18. Not run on 3.9 (not installed in the sandbox); the new files were only checked to parse with 3.9 syntax. CI runs 3.9 and 3.12.
+- Mutation check, by hand: 15 rules of the two modules were removed one at a time (the open-entry test, the future-timestamp guard, the unreadable-journal paths, the exit codes, the baseline, the delivered-only memory, the window, the proven-fix filter, the catch-all around a source) and the tests rerun: 14 failed at first, the 15th (the catch-all that turns a crashing source into an error event) survived, a test was added, and all 15 now fail at least one test.
+- One test writes an entry with the group apply's own `_record` and checks that `rpl watch` sees it open, then closed.
+
+**What was not verified:** a real SIGTERM against a real group apply followed by `rpl watch` (the entry shape comes from `groupapply._record`, not from a killed process); delivery to a real Telegram or webhook; a real systemd timer or cron; a nightly job that calls `rpl notify --record`; the real size of the grace period (60 minutes is a guess, no apply duration was measured on a real host, and an apply that runs longer than the grace gives a false alarm); two `rpl watch` / `rpl notify` runs at the same instant (they share `notifs.json` without a lock); the container names of a real inventory on the first baseline.
+
+**Found while writing it, not fixed:** `groupapply._journal` returns an empty list for a journal that is valid JSON but not a list, so the group apply would read it as "nothing unfinished"; `rpl watch` reports it as unreadable instead. The group apply was not touched.
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.
