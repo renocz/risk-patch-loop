@@ -345,6 +345,43 @@ def cmd_draw(args):
     return 0
 
 
+def panel_majority(sheets):
+    """{id: (answer, votes)} for the sheets of a panel of models: the strictly most voted answer wins; a shared top is `unsure`."""
+    out = {}
+    for ident in sheets[0]:
+        votes = {v: sum(1 for s in sheets if s[ident] == v) for v in ANSWERS}
+        top = max(votes.values())
+        winners = [v for v, n in votes.items() if n == top]
+        out[ident] = (winners[0] if len(winners) == 1 else "unsure", votes)
+    return out
+
+
+def cmd_panel(args):
+    """Merge the sheets of at least 3 models into the sheet of ONE reviewer (the panel). Model names are used to refuse a sheet given twice and
+    are never written to the output: the panel's members are logged by their author, with versions and prompts."""
+    data = json.load(open(args.sample))
+    expected = {r["id"] for r in data["rows"]}
+    pairs = parse_pairs(args.model, "--model")
+    if len(pairs) < 3:
+        raise SystemExit("a panel needs at least 3 models (of at least 3 families): give --model NAME=sheet.csv three times or more")
+    sheets = [read_sheet(path, expected, name) for name, path in pairs]
+    merged = panel_majority(sheets)
+    order = [r["id"] for r in data["rows"]]
+    with open(args.out, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=SHEET_FIELDS)
+        w.writeheader()
+        for ident in order:
+            answer, votes = merged[ident]
+            w.writerow({"id": ident, "answer": answer, "notes": "panel votes: " + ", ".join(f"{v}={n}" for v, n in votes.items() if n)})
+    unanimous = sum(1 for i in order if len({sh[i] for sh in sheets}) == 1)
+    print(f"{len(pairs)} models, {len(order)} rows: unanimous: {unanimous} of {len(order)}")
+    for k, sh in enumerate(sheets, 1):
+        print(f"model {k}: {sum(1 for i in order if sh[i] == merged[i][0])} of {len(order)} rows agree with the majority")
+    print(f"majority: " + ", ".join(f"{v}={sum(1 for i in order if merged[i][0] == v)}" for v in ANSWERS))
+    print(f"wrote {args.out}: it is the sheet of ONE reviewer, the panel; its members are correlated, not several confirmations")
+    return 0
+
+
 def cmd_result(args):
     data = json.load(open(args.sample))
     rows = data["rows"]
@@ -436,6 +473,11 @@ def main(argv):
     r.add_argument("--out", help="write the numbers as JSON")
     r.add_argument("--allow-changed-scoring", action="store_true", help="go on although the score is not the one the sample was drawn with (said loudly)")
     r.set_defaults(fn=cmd_result)
+    pn = sub.add_parser("panel", help="merge the sheets of a panel of at least 3 models into the sheet of one reviewer")
+    pn.add_argument("--sample", required=True)
+    pn.add_argument("--model", action="append", required=True, metavar="NAME=sheet.csv", help="at least 3, from at least 3 model families")
+    pn.add_argument("--out", required=True)
+    pn.set_defaults(fn=cmd_panel)
     args = p.parse_args(argv)
     return args.fn(args)
 

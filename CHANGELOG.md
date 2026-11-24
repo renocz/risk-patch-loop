@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### `rpl sample panel`: the panel of models becomes one reviewer's sheet by a written rule
+- The criteria ask for a panel of models from at least 3 families whose majority counts as ONE reviewer, but nothing built that sheet. `rpl sample panel --sample S --model NAME=sheet.csv ... --out panel.csv` (3 models or more, each sheet validated like a reviewer's, a name used twice refused, nothing written on an error): the strictly most voted answer wins, a shared top is `unsure`, the votes go in `notes`, no model name is written. It prints the rows where all models agree and each model's agreement with the majority. `docs/panel-prompt.md` holds the prompt given to every model.
+- 9 new tests (`PanelTest`); 6 failed or errored before, the other 3 pin refusals that argparse already gave; of 6 removals of the rules, 6 fail a test (a first run left one survivor, the zero-vote entries in `notes`; fixed). Suite 692, Python 3.11.
+- Not verified: with real model answers. The sheet is read as UTF-8 CSV; a model that writes a different format is refused by `read_sheet`, not repaired.
+
 ## 0.10.1 (2026-11-24)
 
 ### False-negative measure: the draw no longer refuses a `risk.json` that holds the same finding twice
