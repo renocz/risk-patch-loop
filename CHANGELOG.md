@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Labelling record
+- `docs/results.md` records, before the tie-break and before any rate, the author's sheet (100 `defer`, a criterion other than the written ones, said so), the damage a spreadsheet did to the returned file and its mechanical repair, the panel (three families, one attempt each, counts only), the result run that stopped without a third reviewer, and how the final number will and will not be read. Documentation only.
+
+### Audit record and README status
+- `docs/results.md` records the blind audit: 36 rows, 0 `act` in both groups, so the reading written in advance gives "not confirmed", and says why that is not evidence that the score is sound (the author answered `defer` on 136 of 136 judgments, including the three ACT rows; the rule for "non-discriminating" looked only at the controls, a gap in what was specified). Roadmap criterion 2 is stated as run and published, inconclusive, the score still not validated. README (EN and FR) no longer says that no false-negative rate was measured: it says the measure was run and is inconclusive. Documentation only.
+
 ### Result record
 - `docs/results.md` records the result of the false-negative measure as it came out (the pre-registered rule fires: the lower end of the interval is above 10%), what it is and is not (every `act` verdict comes from one model on rows where the human and the panel disagreed; the reference standard is unstable), that no change is made to the score on this evidence, and the audit written before it is run, with the thresholds that will be read. Documentation only.
 
