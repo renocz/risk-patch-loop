@@ -759,5 +759,94 @@ class DuplicateRowsTest(unittest.TestCase):
         self.assertEqual(json.load(open(os.path.join(out, "manifest.json")))["duplicates_collapsed"], {"h": 2})
 
 
+class PanelTest(unittest.TestCase):
+    """The panel of models is ONE reviewer: `rpl sample panel` turns the sheets of at least 3 models into its majority sheet. The rule is fixed
+    here, before any answer exists: the strictly most voted answer wins; when the top is shared, the row is `unsure`."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.d = self.tmp.name
+        self.rows = [{"id": f"id{i}", "decision": "WATCH"} for i in range(4)]
+        json.dump({"rows": self.rows, "manifest": {}}, open(os.path.join(self.d, "sample.json"), "w"))
+
+    def sheet(self, name, answers):
+        path = os.path.join(self.d, f"{name}.csv")
+        with open(path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=sample.SHEET_FIELDS)
+            w.writeheader()
+            for r, a in zip(self.rows, answers):
+                w.writerow({"id": r["id"], "answer": a})
+        return f"{name}={path}"
+
+    def run_panel(self, models, out="panel.csv"):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        argv = ["panel", "--sample", os.path.join(self.d, "sample.json"), "--out", os.path.join(self.d, out)]
+        for m in models:
+            argv += ["--model", m]
+        with contextlib.redirect_stdout(buf):
+            try:
+                code = sample.main(argv)
+            except SystemExit as e:
+                code = e.code
+        return code, buf.getvalue()
+
+    def merged(self, out="panel.csv"):
+        return {r["id"]: r for r in csv.DictReader(open(os.path.join(self.d, out), newline=""))}
+
+    def test_the_most_voted_answer_wins(self):
+        code, text = self.run_panel([self.sheet("a", ["act", "defer", "defer", "act"]), self.sheet("b", ["act", "defer", "act", "defer"]),
+                                     self.sheet("c", ["defer", "defer", "defer", "act"])])
+        self.assertEqual(code, 0, text)
+        self.assertEqual({k: v["answer"] for k, v in self.merged().items()}, {"id0": "act", "id1": "defer", "id2": "defer", "id3": "act"})
+
+    def test_three_different_answers_make_unsure(self):
+        code, text = self.run_panel([self.sheet("a", ["act"] * 4), self.sheet("b", ["defer"] * 4), self.sheet("c", ["unsure"] * 4)])
+        self.assertEqual(code, 0, text)
+        self.assertEqual({v["answer"] for v in self.merged().values()}, {"unsure"})
+
+    def test_a_shared_top_among_four_models_makes_unsure(self):
+        code, text = self.run_panel([self.sheet("a", ["act"] * 4), self.sheet("b", ["act"] * 4), self.sheet("c", ["defer"] * 4), self.sheet("d", ["defer"] * 4)])
+        self.assertEqual(code, 0, text)
+        self.assertEqual({v["answer"] for v in self.merged().values()}, {"unsure"})
+
+    def test_fewer_than_three_models_is_refused_and_nothing_is_written(self):
+        code, text = self.run_panel([self.sheet("a", ["act"] * 4), self.sheet("b", ["act"] * 4)])
+        self.assertNotEqual(code, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.d, "panel.csv")))
+
+    def test_two_sheets_under_one_name_are_refused(self):
+        code, text = self.run_panel([self.sheet("a", ["act"] * 4), self.sheet("a", ["act"] * 4), self.sheet("c", ["act"] * 4)])
+        self.assertNotEqual(code, 0)
+
+    def test_an_unanswered_or_unknown_row_is_refused(self):
+        code, text = self.run_panel([self.sheet("a", ["act"] * 4), self.sheet("b", ["act"] * 4), self.sheet("c", ["act", "act", "act", ""])])
+        self.assertNotEqual(code, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.d, "panel.csv")))
+
+    def test_the_votes_are_kept_in_the_notes_without_a_model_name(self):
+        self.run_panel([self.sheet("secretname", ["act", "defer", "defer", "act"]), self.sheet("b", ["act"] * 4), self.sheet("c", ["defer", "defer", "act", "act"])])
+        notes = self.merged()["id0"]["notes"]
+        self.assertIn("act=2", notes)
+        self.assertIn("defer=1", notes)
+        self.assertNotIn("secretname", json.dumps(self.merged()))
+        self.assertEqual(notes, "panel votes: act=2, defer=1")
+
+    def test_the_output_is_a_sheet_that_result_reads(self):
+        sheets = [self.sheet("a", ["act", "defer", "defer", "act"]), self.sheet("b", ["act"] * 4), self.sheet("c", ["defer", "defer", "act", "act"])]
+        self.run_panel(sheets)
+        expected = {r["id"] for r in self.rows}
+        got = sample.read_sheet(os.path.join(self.d, "panel.csv"), expected, "panel")
+        self.assertEqual(got, {"id0": "act", "id1": "defer", "id2": "act", "id3": "act"})
+
+    def test_the_agreement_with_the_majority_is_printed_per_model_and_unanimity_counted(self):
+        code, text = self.run_panel([self.sheet("a", ["act"] * 4), self.sheet("b", ["act"] * 4), self.sheet("c", ["defer"] * 4)])
+        self.assertIn("unanimous: 0 of 4", text)
+        self.assertIn("model 3: 0 of 4", text)
+        self.assertIn("model 1: 4 of 4", text)
+
+
 if __name__ == "__main__":
     unittest.main()
