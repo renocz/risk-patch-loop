@@ -116,6 +116,8 @@ Un groupe (par exemple un conteneur VPN et les services derrière lui) se décla
                           "services": {"indexer": {"quiesce": "none"}}}}
 ```
 
+Un service dont le répertoire de configuration contient un socket Unix que l'application recrée au démarrage (le `qBittorrent/ipc-socket` de qBittorrent en est un) est refusé par le plan, qui dit pourquoi. Nommez ce socket, et lui seul, dans `"ignore_sockets": ["qBittorrent/ipc-socket"]` sous le service (chemins relatifs au répertoire monté) : le plan l'indique comme laissé de côté, il entre dans l'empreinte, et un chemin déclaré qui n'est pas un socket, ou tout autre fichier spécial, reste refusé. Un retour arrière restaure le répertoire sans lui ; l'application le recrée.
+
 ```bash
 python -m rpl group --compose /srv/proj/compose.yaml --parent vpn --plan       # ne change rien ; affiche le plan et son empreinte
 python -m rpl group --compose /srv/proj/compose.yaml --parent vpn --approve <empreinte>

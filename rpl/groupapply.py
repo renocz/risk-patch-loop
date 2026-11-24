@@ -19,7 +19,8 @@ Sequence of an apply, all under the shared lock (rpl/gate.py):
   1. plan, from the compose file AND from Docker (every container, stopped ones included); the two views must name the same members,
      and each member must run the image its reference in the file names in the local store (same image ID; the text may differ);
   2. policy, rehearsal (Docker's own dry run must recreate exactly the group), configured controls, restorability of every configuration
-     directory (bind mounts located under the compose file's directory: no symlink leaving it, no special file, size cap, ownership);
+     directory (bind mounts located under the compose file's directory: no symlink leaving it, no special file, size cap, ownership; a Unix
+     socket the owner names in `services.<svc>.ignore_sockets` is left out of the backup and of the restore, any other special file is refused);
   3. snapshot command (as `rpl patch`);
   4. a journal entry is written BEFORE anything is stopped;
   5. quiesce: members with `quiesce: stop` (the default for a member that mounts a configuration directory) are stopped, dependants first;
@@ -131,9 +132,17 @@ def _inside(path, root):
     return path == root or path.startswith(root + os.sep)
 
 
-def tree_problem(path):
-    """(bytes, None) when `path` (a directory or a file) can be backed up and restored faithfully, else (0, reason)."""
+def _left_out(ignore):
+    """`ignore_sockets` paths in the manifests' own form ("./sub/ipc-socket")."""
+    return {"./" + os.path.normpath(x).replace(os.sep, "/") for x in ignore or ()}
+
+
+def tree_problem(path, ignore=()):
+    """(bytes, None) when `path` (a directory or a file) can be backed up and restored faithfully, else (0, reason).
+    `ignore`: paths, relative to `path`, of Unix sockets the owner declared in `ignore_sockets` (an application recreates them): they are left out.
+    Only a socket can be left out; any other special file, and a declared path that is not a socket, is refused."""
     root, me, total = os.path.realpath(path), os.geteuid(), 0
+    skip = _left_out(ignore)
     stack = [root]
     try:
         while stack:
@@ -149,15 +158,26 @@ def tree_problem(path):
             elif stat.S_ISREG(st.st_mode):
                 total += st.st_size
             else:
+                rel = "./" + os.path.relpath(p, root).replace(os.sep, "/")
+                if rel in skip:
+                    if stat.S_ISSOCK(st.st_mode):
+                        continue
+                    return 0, f"{p} is named in ignore_sockets but is not a socket"
                 return 0, f"{p} is a special file (socket, pipe or device): it cannot be backed up"
+        for rel in sorted(skip):
+            p = os.path.join(root, rel[2:])
+            if os.path.lexists(p) and not stat.S_ISSOCK(os.lstat(p).st_mode):
+                return 0, f"{p} is named in ignore_sockets but is not a socket"
     except OSError as e:
         return 0, f"cannot read {e.filename}: {e.strerror}"
     return total, None
 
 
-def copy_tree(src, dst):
-    """Copy a directory or a file with its modes, owners, times and symlinks. Returns {relative path: [kind, content hash or link target, mode]}."""
+def copy_tree(src, dst, ignore=()):
+    """Copy a directory or a file with its modes, owners, times and symlinks. Returns {relative path: [kind, content hash or link target, mode]}.
+    `ignore`: declared sockets (see tree_problem), left out of the copy and of the manifest."""
     manifest = {}
+    skip = _left_out(ignore)
 
     def one(s, d, rel):
         st = os.lstat(s)
@@ -178,6 +198,8 @@ def copy_tree(src, dst):
                     g.write(chunk)
             manifest[rel] = ["file", h.hexdigest(), mode]
         else:
+            if stat.S_ISSOCK(st.st_mode) and rel in skip:
+                return
             raise OSError(f"{s} is a special file")
         now = os.lstat(d)
         if (now.st_uid, now.st_gid) != (st.st_uid, st.st_gid):
@@ -190,12 +212,15 @@ def copy_tree(src, dst):
     return manifest
 
 
-def read_tree(path):
-    """The manifest of what is on disk at `path`, read back (same shape as copy_tree's)."""
+def read_tree(path, ignore=()):
+    """The manifest of what is on disk at `path`, read back (same shape as copy_tree's), declared sockets left out."""
     manifest = {}
+    skip = _left_out(ignore)
 
     def one(p, rel):
         st = os.lstat(p)
+        if rel in skip and stat.S_ISSOCK(st.st_mode):
+            return
         if stat.S_ISLNK(st.st_mode):
             manifest[rel] = ["link", os.readlink(p), 0]
         elif stat.S_ISDIR(st.st_mode):
@@ -255,6 +280,9 @@ def _entry_problem(entry, services):
                 return f"service '{svc}': policy '{opt['policy']}' needs a non-empty reason"
         if opt.get("quiesce", "stop") not in QUIESCE:
             return f"service '{svc}': quiesce must be one of " + ", ".join(QUIESCE)
+        socks = opt.get("ignore_sockets", [])
+        if not isinstance(socks, list) or any(not isinstance(x, str) or not x or "\x00" in x or x.startswith("/") or ".." in x.split("/") for x in socks):
+            return f"service '{svc}': ignore_sockets must be a list of paths relative to the mounted directory (no absolute path, no '..')"
     return None
 
 
@@ -339,17 +367,22 @@ def build_plan(a, cfg, host):
     base, total = os.path.realpath(os.path.dirname(compose_file)), 0
     for m in members:
         m["items"], m["skipped"] = [], []
+        m["ignore_sockets"] = sorted(set((per.get(m["service"]) or {}).get("ignore_sockets") or []))
+        m["left_out"] = []
         for v in (services[m["service"]].get("volumes") or []):
             src = v.get("source") if isinstance(v, dict) and v.get("type") == "bind" else None
             if not src:
                 continue
             real = os.path.realpath(src)
             if _inside(real, base) and real != base and os.path.lexists(real):
-                size, problem = tree_problem(real)
+                size, problem = tree_problem(real, m["ignore_sockets"])
                 if problem:
-                    raise Refused(f"service '{m['service']}' could not be restored: {problem}")
+                    hint = (f" If it is a Unix socket the application creates again, name it in services.{m['service']}.ignore_sockets "
+                            "(its path relative to the mounted directory)") if "special file" in problem else ""
+                    raise Refused(f"service '{m['service']}' could not be restored: {problem}.{hint}")
                 total += size
                 m["items"].append(real)
+                m["left_out"] += [rel for rel in m["ignore_sockets"] if os.path.lexists(os.path.join(real, rel))]
             else:
                 m["skipped"].append(src)
         m["quiesce"] = (per.get(m["service"]) or {}).get("quiesce", "stop" if m["items"] else "none")
@@ -361,6 +394,8 @@ def build_plan(a, cfg, host):
         raise Refused("not enough free space in backup_dir for the backup and its restore")
     body = {"parent": parent, "compose": compose_file,
             "members": [{k: m[k] for k in ("service", "container", "from", "from_id", "to")} for m in members]}
+    if any(m["ignore_sockets"] for m in members):                    # only when declared: the fingerprint of a group without the option does not change
+        body["ignore_sockets"] = {m["service"]: m["ignore_sockets"] for m in members if m["ignore_sockets"]}
     fingerprint = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
     return {"parent": parent, "parent_service": order[0], "compose": compose_file, "members": members, "policy": policy, "reason": reason,
             "confirmed": st["confirmed"], "controls": list(entry.get("controls") or []), "bytes": total, "fingerprint": fingerprint}
@@ -376,6 +411,8 @@ def show(plan):
             print(f"    container created as {m['created_as']}: same image ID as the file's reference")
         for s in m["skipped"]:
             print(f"    not backed up (outside the compose directory): {s}")
+        for s in m.get("left_out") or []:
+            print(f"    socket left out of the backup (declared in ignore_sockets, the application creates it again): {s}")
     print("fingerprint: " + plan["fingerprint"])
 
 
@@ -501,7 +538,7 @@ def _change(plan, entry, cfg, host):
             for i, src in enumerate(m["items"]):
                 dst = os.path.join(root, m["service"], str(i))
                 os.makedirs(os.path.dirname(dst), mode=0o700, exist_ok=True)
-                manifest = copy_tree(src, dst)
+                manifest = copy_tree(src, dst, m.get("ignore_sockets") or ())
                 if read_tree(dst) != manifest:
                     return f"the backup of {src} does not read back as written"
                 items.append({"service": m["service"], "source": src, "backup": dst, "manifest": manifest})
@@ -723,7 +760,7 @@ def plan_only(a, cfg, host):
         for m in plan["members"]:
             for src in m["items"]:
                 dst = os.path.join(proof, str(n))
-                manifest = copy_tree(src, dst)
+                manifest = copy_tree(src, dst, m.get("ignore_sockets") or ())
                 if read_tree(dst) != manifest:
                     print(f"NOT READY: the backup of {src} does not read back as written")
                     return 1

@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import stat
 import tempfile
 import time
@@ -1017,6 +1018,143 @@ class RetriedByTheCollector(GroupCase):
         self.write(os.path.join(self.cfg["state_dir"], groupapply.JOURNAL),
                    json.dumps([{"ts": 1000.0, "result": "ok", "plan": {"parent": "p"}}, {"id": "n", "ts": 1000.0, "result": "ok"}, good]))
         self.assertEqual([e["key"] for e in events.group_result_events(self.cfg, 1100.0)], ["group:g:ok"])
+
+
+class TreeSockets(unittest.TestCase):
+    """A Unix socket in a configuration directory (qBittorrent's ipc-socket) is a runtime artifact the application recreates; it cannot be copied.
+    Only a socket named by the owner is left out: any other special file, or a declared path that is not a socket, is still refused."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = os.path.realpath(self.tmp.name)
+        os.makedirs(os.path.join(self.root, "sub"))
+        with open(os.path.join(self.root, "settings.conf"), "w") as f:
+            f.write("a = 1\n")
+        self.sock = os.path.join(self.root, "sub", "ipc-socket")
+        s = __import__("socket").socket(__import__("socket").AF_UNIX, __import__("socket").SOCK_STREAM)
+        s.bind(self.sock)
+        s.close()                                                            # the file stays, as after the process of a real application
+
+    def test_a_socket_is_refused_by_default(self):
+        size, problem = groupapply.tree_problem(self.root)
+        self.assertIn("special file", problem)
+
+    def test_a_declared_socket_is_left_out_and_not_counted(self):
+        size, problem = groupapply.tree_problem(self.root, ["sub/ipc-socket"])
+        self.assertIsNone(problem)
+        self.assertEqual(size, len("a = 1\n"))
+
+    def test_another_socket_that_was_not_declared_is_still_refused(self):
+        other = os.path.join(self.root, "other.sock")
+        s = __import__("socket").socket(__import__("socket").AF_UNIX, __import__("socket").SOCK_STREAM)
+        s.bind(other)
+        s.close()
+        size, problem = groupapply.tree_problem(self.root, ["sub/ipc-socket"])
+        self.assertIn("other.sock", problem)
+
+    def test_a_declared_path_that_is_not_a_socket_is_refused(self):
+        size, problem = groupapply.tree_problem(self.root, ["sub/ipc-socket", "settings.conf"])      # the socket is declared too: only the file is wrong
+        self.assertIn("not a socket", problem)
+
+    def test_a_declared_path_that_does_not_exist_is_fine(self):
+        os.unlink(self.sock)
+        size, problem = groupapply.tree_problem(self.root, ["sub/ipc-socket"])
+        self.assertIsNone(problem)
+
+    def test_a_pipe_is_refused_even_when_declared(self):
+        os.unlink(self.sock)
+        os.mkfifo(self.sock)
+        size, problem = groupapply.tree_problem(self.root, ["sub/ipc-socket"])
+        self.assertIn("not a socket", problem)
+
+    def test_the_copy_and_the_read_back_leave_the_socket_out_and_agree(self):
+        dst = os.path.join(self.root + "-copy")
+        self.addCleanup(shutil.rmtree, dst, True)
+        manifest = groupapply.copy_tree(self.root, dst, ["sub/ipc-socket"])
+        self.assertNotIn("./sub/ipc-socket", manifest)
+        self.assertIn("./settings.conf", manifest)
+        self.assertFalse(os.path.lexists(os.path.join(dst, "sub", "ipc-socket")))
+        self.assertEqual(groupapply.read_tree(dst), manifest)
+        self.assertEqual(groupapply.read_tree(self.root, ["sub/ipc-socket"]), manifest)
+
+    def test_the_copy_does_not_skip_a_pipe_even_when_its_path_is_declared(self):
+        os.unlink(self.sock)
+        os.mkfifo(self.sock)
+        dst = os.path.join(self.root + "-copy3")
+        self.addCleanup(shutil.rmtree, dst, True)
+        with self.assertRaises(OSError):
+            groupapply.copy_tree(self.root, dst, ["sub/ipc-socket"])
+
+    def test_the_copy_without_the_declaration_still_fails(self):
+        dst = os.path.join(self.root + "-copy2")
+        self.addCleanup(shutil.rmtree, dst, True)
+        with self.assertRaises(OSError):
+            groupapply.copy_tree(self.root, dst)
+
+
+class SocketsInConfiguration(GroupCase):
+    def add_socket(self, directory, name="app.sock"):
+        sk = __import__("socket")
+        s = sk.socket(sk.AF_UNIX, sk.SOCK_STREAM)
+        s.bind(os.path.join(directory, name))
+        s.close()
+
+    def test_without_the_option_the_plan_is_refused_and_says_how_to_declare_it(self):
+        self.add_socket(self.idx_cfg)
+        rc, out = self.run_group("--plan")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("special file", out)
+        self.assertIn("ignore_sockets", out)
+        self.assertIn("services.idx", out)
+
+    def test_with_the_option_the_plan_is_ready_and_lists_what_is_left_out(self):
+        self.add_socket(self.idx_cfg)
+        self.configure(services={"idx": {"ignore_sockets": ["app.sock"]}})
+        rc, out = self.run_group("--plan")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("PLAN READY", out)
+        self.assertIn("socket left out of the backup", out)
+        self.assertIn("app.sock", out)
+
+    def test_the_option_changes_the_fingerprint(self):
+        before = self.fingerprint()
+        self.configure(services={"idx": {"ignore_sockets": ["app.sock"]}})
+        self.assertNotEqual(self.fingerprint(), before)
+
+    def test_without_the_option_the_fingerprint_is_the_one_it_was(self):
+        self.assertEqual(self.fingerprint(), self.fingerprint())
+        self.configure(services={"idx": {"quiesce": "stop"}})
+        before = self.fingerprint()
+        self.configure(services={"idx": {"quiesce": "stop", "ignore_sockets": []}})
+        self.assertEqual(self.fingerprint(), before)                                      # an empty list is no declaration
+
+    def test_the_apply_backs_up_everything_but_the_socket_and_the_rollback_restores_the_rest(self):
+        self.add_socket(self.idx_cfg)
+        self.configure(services={"idx": {"ignore_sockets": ["app.sock"]}})
+        self.host.fail_up_images.add(NEW_TUNNEL)
+        rc, out = self.run_group()
+        self.assertEqual(rc, 2, out)                                                      # failed and rolled back
+        self.assertIn("rollback ok", out)
+        self.assertEqual(self.read(os.path.join(self.idx_cfg, "idx.conf")), "a = 1\n")
+        names = [n for _, _, files in os.walk(self.cfg["backup_dir"]) for n in files]
+        self.assertIn("idx.conf", names)
+        self.assertNotIn("app.sock", names)
+
+    def test_a_declared_path_that_is_a_regular_file_is_refused(self):
+        self.configure(services={"idx": {"ignore_sockets": ["idx.conf"]}})
+        rc, out = self.run_group("--plan")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("not a socket", out)
+
+    def test_bad_declarations_are_refused_in_words(self):
+        for name, value in (("an absolute path", ["/etc/x"]), ("a path leaving the directory", ["../x"]), ("an empty path", [""]),
+                            ("not a list", "app.sock"), ("a list of non-strings", [3]), ("a path with a nul", ["a\x00b"])):
+            with self.subTest(name):
+                self.configure(services={"idx": {"ignore_sockets": value}})
+                rc, out = self.run_group("--plan")
+                self.assertEqual(rc, 1, out)
+                self.assertIn("ignore_sockets must be a list of paths relative to the mounted directory", out)       # the validation, not a later refusal
 
 
 class TreeCopy(unittest.TestCase):

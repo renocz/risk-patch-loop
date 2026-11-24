@@ -287,6 +287,12 @@ By the owner's local agent on the same host (LXC container, root; Docker 29.10.0
 
 **Not tested:** an apply with a cold download, a configuration over 100 MiB, a dependant with a slow health check, a real VPN group; the duration of a restore, of an interrupted apply then resumed; `--plan` on the real group; `AccuracySec` with `OnCalendar=minutely`, `RandomizedDelaySec`, a loaded host, a user timer, another systemd or another account than root.
 
+### The real group reached the backup check (24 November 2026)
+
+On the owner's host (a `rpl-config.json` copy with a `groups` entry in the public format, a state directory of its own, `scan` then `inventory`, `risk` and `fixcheck` in 422 s, 75 images, 3,221 fixable HIGH/CRITICAL findings, none UNRELIABLE), `rpl group --plan` was refused for one reason: `qBittorrent/ipc-socket`, a Unix socket in the configuration directory, `is a special file ... it cannot be backed up`. Read in the code: the proven-fix check comes before the backup check, so at least one member of the group has a proven fix pending, and the group declaration, the policy and the state were accepted. The cap on size (143 MiB against 2,048 MB) and the free space were not reached. Fix, tests first: `services.<svc>.ignore_sockets` (see the CHANGELOG). Not run on the real group.
+
+The same run gave the numbers of the day, with no `tunnel_hosts_file` (so no `internet-*` level: the Internet exposure is unknown, never guessed): 3,237 findings with a fix, 2 ACT, 8 PLAN, 3,227 WATCH, against 18 ACT and 222 PLAN on 19 November with the tunnel list. These numbers describe the score without its exposure input and must not be used to draw a sample: the draw needs the same `tunnel_hosts_file` and `roles.json` as the working copy of 19 November.
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.
