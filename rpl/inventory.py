@@ -9,6 +9,11 @@ Levels, from most to least exposed:
   localhost           published on 127.0.0.1 only
   internal            no port, no route
 Internet exposure is "unknown" (never guessed) until a list of published host names is given (config key tunnel_hosts_file).
+`auth` comes from the Traefik labels (a middleware whose name holds one of auth_middleware_words). A host protected by a gate OUTSIDE the proxy, for
+example the access gateway of a tunnel, shows nothing in the labels: the owner lists such hosts in `gated_hosts_file` (a JSON list of host names).
+A container whose every published host is listed there, or has a forward-auth label, is internet-auth. The list is BELIEVED, not tested (rpl cannot
+tell that the gate works), it only matters for hosts that are also in tunnel_hosts_file, and it never makes a LAN level "-auth": a request from the
+LAN straight to the proxy does not pass a gate that sits in the tunnel.
 A container that shares another container's network (network_mode: container:X) inherits that container's level.
 """
 import json
@@ -38,8 +43,24 @@ def routers(labels, auth_words):
     return r
 
 
-def analyse(c, tunnel, auth_words):
-    """One entry from one `docker inspect` object. tunnel: set of published host names, or None if unknown."""
+def read_hosts_file(path, key):
+    """The set of host names of a JSON list file, None when no path is configured or the file does not exist. A file that is not a list of
+    non-empty strings is an error, not an empty list: a gate list that is silently ignored changes the score."""
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        raise SystemExit(f"{key}: {path} is not a JSON list of host names ({type(e).__name__})")
+    if not isinstance(data, list) or not all(isinstance(h, str) and h.strip() for h in data):
+        raise SystemExit(f"{key}: {path} is not a JSON list of host names (a list of non-empty strings)")
+    return set(data)
+
+
+def analyse(c, tunnel, auth_words, gated=None):
+    """One entry from one `docker inspect` object. tunnel: set of published host names, or None if unknown. gated: set of host names behind a
+    gate outside the proxy labels, or None."""
     cfg, hc = c["Config"], c["HostConfig"]
     labels = cfg.get("Labels") or {}
     mode = hc.get("NetworkMode", "")
@@ -52,12 +73,14 @@ def analyse(c, tunnel, auth_words):
     rts = routers(labels, auth_words) if labels.get("traefik.enable") == "true" else {}
     hosts = sorted({h for e in rts.values() for h in e["hosts"]})
     auth = bool(rts) and all(e["auth"] for e in rts.values())
+    gated = gated or set()
+    gate_auth = bool(rts) and all(e["auth"] or (bool(e["hosts"]) and all(h in gated for h in e["hosts"])) for e in rts.values())
     sensitive = [m["Source"] for m in c.get("Mounts", []) if m.get("Source") in SENSITIVE]
     rights = [x for x, on in (("privileged", hc.get("Privileged")), ("pid=host", hc.get("PidMode") == "host"), ("net=host", mode == "host")) if on]
     rights += [f"cap:{x}" for x in (hc.get("CapAdd") or [])]
     internet = ("unknown" if hosts else "no") if tunnel is None else ("yes" if any(h in tunnel for h in hosts) else "no")
     if internet == "yes":
-        level = "internet-auth" if auth else "internet-no-auth"
+        level = "internet-auth" if gate_auth else "internet-no-auth"
     elif any(ip not in ("127.0.0.1", "::1") for ip, _, _ in ports):
         level = "lan-port"
     elif rts:
@@ -66,7 +89,7 @@ def analyse(c, tunnel, auth_words):
         level = "localhost"
     else:
         level = "internal"
-    return {"image": cfg.get("Image"), "level": level, "internet": internet, "hosts": hosts, "auth": auth,
+    return {"image": cfg.get("Image"), "level": level, "internet": internet, "hosts": hosts, "auth": auth, "gated": gate_auth and not auth,
             "ports": sorted(f"{ip}:{hp}->{cp}" for ip, hp, cp in ports), "network_of": mode[10:] if mode.startswith("container:") else None,
             "sensitive_mounts": sensitive, "rights": rights}
 
@@ -99,19 +122,21 @@ def diff(old, new):
 def main(argv):
     cfg = config.load()
     auth_words = cfg["auth_middleware_words"]
-    tunnel = None
-    if cfg.get("tunnel_hosts_file") and os.path.exists(cfg["tunnel_hosts_file"]):
-        tunnel = set(json.load(open(cfg["tunnel_hosts_file"])))
+    tunnel = read_hosts_file(cfg.get("tunnel_hosts_file"), "tunnel_hosts_file")
+    gated = read_hosts_file(cfg.get("gated_hosts_file"), "gated_hosts_file")
+    if cfg.get("gated_hosts_file") and gated is None:
+        print(f"warning: gated_hosts_file {cfg['gated_hosts_file']} does not exist: no host is treated as gated")
     ids_ = subprocess.run(["docker", "ps", "-aq"], capture_output=True, text=True, check=True).stdout.split()
     conts = json.loads(subprocess.run(["docker", "inspect", *ids_], capture_output=True, text=True, check=True).stdout)
-    inv = {c["Name"].lstrip("/"): analyse(c, tunnel, auth_words) for c in conts}
+    inv = {c["Name"].lstrip("/"): analyse(c, tunnel, auth_words, gated) for c in conts}
     inv = inherit(inv, {c["Id"]: c["Name"].lstrip("/") for c in conts})
     path = config.state(cfg, "inventory.json")
     old = json.load(open(path)) if os.path.exists(path) else None
     json.dump(inv, open(path, "w"), indent=1, sort_keys=True)
     if old is None:
         counts = {k: sum(1 for e in inv.values() if e["level"] == k) for k in ORDER}
-        print(f"{len(inv)} containers; Internet exposure: {'unknown (no tunnel_hosts_file)' if tunnel is None else 'read'}; " + ", ".join(f"{k}={v}" for k, v in counts.items()))
+        print(f"{len(inv)} containers; Internet exposure: {'unknown (no tunnel_hosts_file)' if tunnel is None else 'read'}"
+              + (f", {len(gated)} gated host(s) believed" if gated else "") + "; " + ", ".join(f"{k}={v}" for k, v in counts.items()))
     else:
         print("\n".join(diff(old, inv)) or "no change")
     return 0

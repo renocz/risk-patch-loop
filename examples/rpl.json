@@ -6,6 +6,7 @@
   "roles_file": "roles.json",
   "accepted_file": "accepted.json",
   "tunnel_hosts_file": null,
+  "gated_hosts_file": null,
   "snapshot_command": null,
   "route_check_url": "https://127.0.0.1/",
   "health_timeout_s": 180,

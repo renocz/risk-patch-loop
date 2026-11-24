@@ -302,6 +302,14 @@ The same run gave the numbers of the day, with no `tunnel_hosts_file` (so no `in
 
 **Not verified:** the weighted estimate on a real draw (none was made); the host's population sizes; the effect of a stratum labelled in full.
 
+### The real group's plan, and the score without its exposure input (24 November 2026)
+
+With the public code at `3b17cdd` on the owner's host, the real inputs (tunnel list and roles of the working copy of 19 November) and a state directory of its own, `rpl group --plan` of the VPN group returned `PLAN READY`, code 0, fingerprint `9f26fe1b4f27abeb`: seven members, only the port-manager helper (`curlimages/curl` 8.22.0 to 8.23.0) with a new image, the others recreated only; five configuration directories backed up and read back identical (the backup proof, then deleted); `qBittorrent/ipc-socket` left out as declared; `/storage` and the incomplete-downloads folder outside the compose directory, not backed up. Chain times: scan 97 s (75 images, 20 KEV, 3,221 fixable, not UNRELIABLE), inventory, risk, fixcheck 18 s. `members_healthy` after a recreation and the restore are only exercised by an apply. Not run: an apply.
+
+**Counts with the real exposure input:** 3,237 findings with a fix, 15 ACT (12 internet-no-auth, 1 internet-auth, 2 unknown), 480 PLAN (427 internet-no-auth), 2,742 WATCH. Against 18 ACT and 222 PLAN on 19 November: the working copy of that day had a `gated_hosts_file` (hosts protected by an authentication gate outside the proxy) that the public code did not know, so all the hosts of the tunnel list were read without authentication. Added (see the CHANGELOG), tests first; the owner's real gate list was not tried. The draw of the false-negative sample has to use the same tunnel list, gate list and roles, and the strata sizes change with them: the numbers above are not the ones to draw from.
+
+**What the plan means.** To update one helper's `curl` the group apply recreates the VPN and its six dependants (parent first, then every dependant). That is by design: a parent recreated leaves its dependants in a dead network namespace. A mode that recreates only the dependants with a new image, leaving the parent alone, would be safe for a dependant that is the only one to change; it does not exist (every member is refused by `rpl patch`, and `rpl group` always applies the whole group). Not decided.
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.

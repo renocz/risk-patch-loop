@@ -139,6 +139,7 @@ python -m rpl group --purge                                                    #
 | `patch-apps.json` | les services que l'outil a le droit de *proposer*, chacun avec une route de santé et une base à sauvegarder |
 | `roles.json` | services du plan de contrôle et services qui traitent des entrées non fiables (ils pèsent plus) |
 | `tunnel-hosts.json` | noms d'hôtes publiés sur Internet (tunnel ou pare-feu) ; sans lui, l'exposition Internet est « inconnue », jamais devinée |
+| `gated-hosts.json` | facultatif (`gated_hosts_file`) : noms d'hôtes protégés par une passerelle d'authentification EN DEHORS des étiquettes Traefik (par exemple la passerelle d'accès de votre tunnel). Un conteneur dont tous les hôtes publiés sont listés, ou ont une étiquette d'authentification, est `internet-auth` (facteur 0,85) au lieu de `internet-no-auth` (1,0). La liste est crue, pas testée ; elle ne compte que pour les hôtes aussi présents dans `tunnel-hosts.json`, et ne rend jamais un niveau LAN « -auth » |
 | `accepted.json` | constats examinés et acceptés : `{"image|CVE-...": "raison"}` |
 
 ## Règles de sécurité, écrites dans le code

@@ -139,6 +139,7 @@ python -m rpl group --purge                                                    #
 | `patch-apps.json` | the services the tool is allowed to *propose*, each with a health route and a database to dump |
 | `roles.json` | control-plane services and services that parse untrusted input (they weigh more) |
 | `tunnel-hosts.json` | host names published to the Internet (from your tunnel or firewall); without it, Internet exposure is "unknown", never guessed |
+| `gated-hosts.json` | optional (`gated_hosts_file`): host names protected by an authentication gate OUTSIDE the Traefik labels (for example the access gateway of your tunnel). A container whose every published host is listed, or has a forward-auth label, is `internet-auth` (factor 0.85) instead of `internet-no-auth` (1.0). The list is believed, not tested; it only counts for hosts also in `tunnel-hosts.json`, and never makes a LAN level "-auth" |
 | `accepted.json` | findings you reviewed and accepted: `{"image|CVE-...": "reason"}` |
 
 ## Safety rules, as code
