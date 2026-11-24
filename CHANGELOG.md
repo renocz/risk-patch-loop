@@ -7,6 +7,9 @@
 - 9 new tests (`PanelTest`); 6 failed or errored before, the other 3 pin refusals that argparse already gave; of 6 removals of the rules, 6 fail a test (a first run left one survivor, the zero-vote entries in `notes`; fixed). Suite 692, Python 3.11.
 - Not verified: with real model answers. The sheet is read as UTF-8 CSV; a model that writes a different format is refused by `read_sheet`, not repaired.
 
+### Draw record
+- `docs/results.md` records the draw of 24 November 2026 before any labelling: counts of distinct findings, strata, hashes of the manifest, sample and sheet, the unchanged score. Documentation only.
+
 ## 0.10.1 (2026-11-24)
 
 ### False-negative measure: the draw no longer refuses a `risk.json` that holds the same finding twice
