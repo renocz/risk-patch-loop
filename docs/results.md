@@ -305,6 +305,10 @@ The same run gave the numbers of the day, with no `tunnel_hosts_file` (so no `in
 
 Seen from the owner's production: its state directory holds its own `groupes.json`, `registre.json`, `notifs.json`, `vm-attente.json` and `apply.lock`, and `rpl` writes `notifs.json` and `apply.lock` in its state directory too. Checked with the code on synthetic files: a `notifs.json` that is a JSON object keeps its foreign keys and receives `rpl`'s; one that is a list or text was REPLACED by `{"<key>": {...}}`, which would have destroyed the other tool's state. Fixed (the file is kept aside, see the CHANGELOG), tests first. Not checked: the real file of any other tool, and what happens when two tools `flock` the same `apply.lock`.
 
+### The score is fingerprinted at the draw (24 November 2026)
+
+To freeze the score before the draw in a way a reader can check, the manifest of a draw now records the hashes of `rpl/risk.py` and `rpl/inventory.py`, the thresholds, and the hashes of the roles, tunnel and gate lists in the configuration; `rpl sample result` refuses to describe another score. Tests first (12, 10 failing before; 11 of 11 removals caught). The freeze itself is a tag (0.10.0) and these hashes: after it, any change to the score or to its input files makes the measure refuse itself unless the owner says otherwise. Not verified on a real draw.
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.

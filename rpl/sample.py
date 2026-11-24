@@ -9,6 +9,9 @@ risk.json files, seed and size gets the same sample. Reviewers get `sheet.csv`, 
 decision; `sample.json` holds them and stays with whoever computes the result. The draw is stratified (as many ACT rows as PLAN + WATCH rows), so `result`
 prints the rate in the sample AND an estimate for the host, weighted by the size of each stratum (`weighted_rate`), and applies the decision rule to
 the latter: the score must change when the LOWER end of the 95% interval is above 10%; otherwise nothing is required, and nothing is shown about a low rate.
+The manifest of a draw records what the score is made of (`scoring`: the hashes of risk.py and inventory.py, the thresholds, and the hashes of the
+owner's roles, tunnel and gate lists named in the configuration), and `result` refuses to describe another score (exit 4, `--allow-changed-scoring`
+goes on and says so). Run both with the configuration that produced the risk.json.
 No network call, no dependency.
 """
 import argparse
@@ -19,11 +22,53 @@ import math
 import os
 import sys
 
-from . import __version__
+from . import __version__, config, risk
 
 ANSWERS = ("act", "defer", "unsure")
 SHEET_FIELDS = ["id", "host", "image", "cve", "pkg", "severity", "kev", "exposure", "sensitive_access", "fixed_version", "answer", "notes"]
 CRITERIA = os.path.join("docs", "labelling-criteria.md")
+
+
+SCORING_FILES = ("risk.py", "inventory.py")           # the code that turns findings and containers into a level and a decision
+SCORING_INPUTS = ("roles_file", "tunnel_hosts_file", "gated_hosts_file")
+
+
+def scoring_fingerprint(cfg):
+    """What the score is made of, as hashes: the two modules, the thresholds, and the owner's input files named in the configuration (None when a
+    file is not configured or does not exist). Hashes only: the manifest is published, it must hold neither a path nor the content of a list."""
+    pkg = os.path.dirname(os.path.abspath(__file__))
+    inputs = {}
+    for key in SCORING_INPUTS:
+        path = (cfg or {}).get(key)
+        inputs[key] = sha256_file(path) if path and os.path.exists(path) else None
+    return {"files": {name: sha256_file(os.path.join(pkg, name)) for name in SCORING_FILES},
+            "t_act": risk.T_ACT, "t_plan": risk.T_PLAN, "inputs": inputs}
+
+
+def scoring_changes(recorded, now):
+    """(changes, not_recorded): what differs between the fingerprint of the draw and the current one, and the inputs one side cannot tell."""
+    changes, unknown = [], []
+    for name in SCORING_FILES:
+        if recorded["files"].get(name) != now["files"][name]:
+            changes.append(f"{name} is not the file the sample was drawn with")
+    for key in ("t_act", "t_plan"):
+        if recorded.get(key) != now[key]:
+            changes.append(f"{key} was {recorded.get(key)} at the draw and is {now[key]} now")
+    for key in SCORING_INPUTS:
+        then, current = (recorded.get("inputs") or {}).get(key), now["inputs"][key]
+        if then is None or current is None:
+            if then != current:
+                unknown.append(key)
+        elif then != current:
+            changes.append(f"{key} is not the file the sample was drawn with")
+    return changes, unknown
+
+
+def _config():
+    try:
+        return config.load()
+    except Exception:                                                        # an unreadable configuration must not stop a draw from saying what it can
+        return {}
 
 
 def sha256_file(path):
@@ -245,7 +290,8 @@ def cmd_draw(args):
                 "hosts": len(hosts), "single_host": len(hosts) < 2,
                 "strata": res["strata"], "available_with_fix": res["available"],
                 "inputs": {name: sha256_file(path) for name, path in pairs},
-                "criteria_sha256": sha256_file(CRITERIA), "ids": sorted(r["id"] for r in res["rows"])}
+                "criteria_sha256": sha256_file(CRITERIA), "scoring": scoring_fingerprint(_config()),
+                "ids": sorted(r["id"] for r in res["rows"])}
     with open(os.path.join(args.out, "sample.json"), "w") as f:
         json.dump({"manifest": manifest, "rows": res["rows"]}, f, ensure_ascii=False, indent=1, sort_keys=True)
     with open(os.path.join(args.out, "manifest.json"), "w") as f:
@@ -261,6 +307,20 @@ def cmd_draw(args):
 def cmd_result(args):
     data = json.load(open(args.sample))
     rows = data["rows"]
+    recorded = (data.get("manifest") or {}).get("scoring")
+    if not isinstance(recorded, dict) or not isinstance(recorded.get("files"), dict):
+        print("warning: this sample was drawn before the score was fingerprinted: it cannot be checked that the score is the one it was drawn with")
+    else:
+        changes, unknown = scoring_changes(recorded, scoring_fingerprint(_config()))
+        for key in unknown:
+            print(f"warning: {key} was not recorded at the draw, or is not configured now: it cannot be compared")
+        if changes:
+            if not getattr(args, "allow_changed_scoring", False):
+                print("REFUSED: the score changed since the draw, so this measure would describe another score:\n  " + "\n  ".join(changes)
+                      + "\nrun it with the configuration and the version of the draw, or draw again; --allow-changed-scoring goes on anyway")
+                return 4
+            print("WARNING: the score changed since the draw, the numbers below describe the score of the draw, not the current one:\n  "
+                  + "\n  ".join(changes))
     expected = {r["id"] for r in rows}
     pairs = parse_pairs(args.reviewer, "--reviewer")
     if len(pairs) != 2:
@@ -333,6 +393,7 @@ def main(argv):
     r.add_argument("--reviewer", action="append", required=True, metavar="NAME=sheet.csv")
     r.add_argument("--tiebreak", metavar="NAME=sheet.csv")
     r.add_argument("--out", help="write the numbers as JSON")
+    r.add_argument("--allow-changed-scoring", action="store_true", help="go on although the score is not the one the sample was drawn with (said loudly)")
     r.set_defaults(fn=cmd_result)
     args = p.parse_args(argv)
     return args.fn(args)

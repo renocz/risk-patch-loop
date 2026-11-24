@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### False-negative measure: the manifest fingerprints the score, `result` refuses another one
+- The measure of roadmap criterion 2 describes ONE score, frozen before the draw. The manifest of `rpl sample draw` now records `scoring`: the SHA-256 of `rpl/risk.py` and `rpl/inventory.py` (what turns findings and containers into a level and a decision), the thresholds `t_act` and `t_plan`, and the SHA-256 of the owner's `roles_file`, `tunnel_hosts_file` and `gated_hosts_file` named in the configuration (`null` when one is not configured or does not exist). Hashes only: the manifest is published and holds neither a path nor the content of a list.
+- `rpl sample result` compares that fingerprint with the current code and configuration. A change in a module, a threshold or an input file is refused (exit 4), naming what changed, and no rate is printed; `--allow-changed-scoring` goes on and prints a loud warning that the numbers describe the score of the draw. An input that one side does not record or configure is said, not refused. A sample drawn before this change is read with a warning that it cannot be checked. Both commands must run with the configuration that produced the `risk.json` (`RPL_CONFIG`).
+- 12 new tests (`ScoringFingerprintTest`), 10 of them failing or erroring before (the others pin that the same score is accepted and that the manifest holds no path or content); of 11 removals of the rules, 11 fail a test. A first run showed a test of mine wrong about a default (`roles_file` defaults to `roles.json` next to the configuration). Suite 646, Python 3.11, 3.12, 3.13.
+- Not verified: a real draw; a version bump alone changes the fingerprint only through the files it touches.
+
 ### README test count
 - The README test count (EN and FR) is set to 634, the number of tests that pass on `main` on Python 3.11, 3.12 and 3.13 after the false-negative measure, `ignore_sockets` and the foreign state file changes (CI runs 3.9 and 3.12).
 
