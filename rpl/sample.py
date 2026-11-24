@@ -7,7 +7,8 @@ This is roadmap criterion 3 of the README. The draw is deterministic (the order 
 finding, not from a random-number generator whose output could change between Python versions), so anyone with the same
 risk.json files, seed and size gets the same sample. Reviewers get `sheet.csv`, which never contains the score or the
 decision; `sample.json` holds them and stays with whoever computes the result. The draw is stratified (as many ACT rows as PLAN + WATCH rows), so `result`
-prints the rate in the sample AND an estimate for the host, weighted by the size of each stratum (`weighted_rate`), and judges the 10% target on the latter.
+prints the rate in the sample AND an estimate for the host, weighted by the size of each stratum (`weighted_rate`), and applies the decision rule to
+the latter: the score must change when the LOWER end of the 95% interval is above 10%; otherwise nothing is required, and nothing is shown about a low rate.
 No network call, no dependency.
 """
 import argparse
@@ -71,8 +72,9 @@ def pick(rows, n, seed, tag):
 
 
 def draw(hosts, size, seed, allow_short=False, allow_single_host=False):
-    """Stratified draw. The ACT rows and the PLAN + WATCH rows are as numerous as each other, and PLAN and WATCH
-    share the second half as evenly as the findings allow."""
+    """Stratified draw. The ACT rows come first: half of the sample, or all of them when the host has fewer than that (a host where the score ranks
+    few findings ACT is the usual case: 18 of 2,142 on the author's). The rest of the sample comes from PLAN and WATCH, as evenly as the findings
+    allow. The strata are not as large as the host's, so `result` weights them (`weighted_rate`)."""
     if len(hosts) < 2 and not allow_single_host:
         raise SystemExit("the sample comes from one host only: pass --single-host to accept that and have it written in the manifest "
                          "(the measurement then says it covers one host)")
@@ -84,16 +86,15 @@ def draw(hosts, size, seed, allow_short=False, allow_single_host=False):
     plan = [r for r in rows if r.get("decision") == "PLAN"]
     watch = [r for r in rows if r.get("decision") == "WATCH"]
     n_act = min(size // 2, len(act))
-    n_plan = min(len(plan), (n_act + 1) // 2)
-    n_watch = min(len(watch), n_act - n_plan)
-    n_plan = min(len(plan), n_act - n_watch)
-    if n_plan + n_watch < n_act:
-        n_act = n_plan + n_watch
+    below = size - n_act
+    n_plan = min(len(plan), (below + 1) // 2)
+    n_watch = min(len(watch), below - n_plan)
+    n_plan = min(len(plan), below - n_watch)
     chosen = pick(act, n_act, seed, "act") + pick(plan, n_plan, seed, "plan") + pick(watch, n_watch, seed, "watch")
     available = {"ACT": len(act), "PLAN": len(plan), "WATCH": len(watch)}
     if len(chosen) < size and not allow_short:
-        raise SystemExit(f"only {len(chosen)} findings can be drawn with ACT and PLAN+WATCH equally numerous "
-                         f"(available with a fix: {available}); the criterion needs {size}. Use --allow-short for a trial draw.")
+        raise SystemExit(f"only {len(chosen)} findings with a fix can be drawn (available with a fix: {available}); "
+                         f"the criterion needs {size}. Use --allow-short for a trial draw.")
     return {"rows": chosen, "available": available,
             "strata": {"ACT": n_act, "PLAN": n_plan, "WATCH": n_watch}}
 
@@ -296,10 +297,14 @@ def cmd_result(args):
             continue
         judged = True
         print(f"estimated for the host, {label}: {fmt_weighted(w)}")
-        print(f"target 10% ({label}, host estimate): point estimate {'met' if w['estimate'] <= 0.10 else 'NOT met'}, "
-              f"upper end of the interval {'under' if w['ci95'][1] <= 0.10 else 'above'} 10%")
+        lo, hi = w["ci95"]
+        if lo > 0.10:
+            print(f"decision rule ({label}): the lower end of the interval ({lo * 100:.1f}%) is above 10%: the score must change and the measurement be repeated")
+        else:
+            print(f"decision rule ({label}): the lower end of the interval ({lo * 100:.1f}%) is not above 10%: the rule requires no change, "
+                  f"and this does not show that the rate is under 10% (upper end {hi * 100:.1f}%)")
     if not judged:
-        print("the 10% target cannot be judged: no estimate for the host")
+        print("the decision rule cannot be applied: no estimate for the host")
     by = {}
     for r in rows:
         by.setdefault(r["decision"], {"act": 0, "defer": 0, "unsure": 0})[res["truth"][r["id"]]] += 1
