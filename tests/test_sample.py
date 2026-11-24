@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from rpl import sample
 
@@ -293,6 +294,161 @@ class FeasibleDrawTest(unittest.TestCase):
     def test_the_manifest_gives_the_population_sizes_the_weights_need(self):
         res = sample.draw(self.host(18, 222, 1902), 100, 7, allow_single_host=True)
         self.assertEqual(res["available"], {"ACT": 18, "PLAN": 222, "WATCH": 1902})
+
+
+class ScoringFingerprintTest(unittest.TestCase):
+    """The measure describes ONE score. The manifest of a draw records what the score was made of, and `result` refuses to describe another."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.d = self.tmp.name
+        self.cwd = os.getcwd()
+        os.chdir(self.d)
+        self.addCleanup(os.chdir, self.cwd)
+        os.makedirs("docs")
+        open(sample.CRITERIA, "w").write("criteria")
+        for name, content in (("roles.json", '{"x": 1}'), ("tunnel.json", '["a.example.org"]'), ("gated.json", '["a.example.org"]')):
+            open(os.path.join(self.d, name), "w").write(content)
+        json.dump({"state_dir": os.path.join(self.d, "state"), "roles_file": "roles.json", "tunnel_hosts_file": "tunnel.json",
+                   "gated_hosts_file": "gated.json"}, open(os.path.join(self.d, "rpl.json"), "w"))
+        patcher = mock.patch.dict(os.environ, {"RPL_CONFIG": os.path.join(self.d, "rpl.json")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def host_rows(self):
+        rows = []
+        for dec, n in (("ACT", 6), ("PLAN", 6), ("WATCH", 6)):
+            rows += [finding(f"{dec}/i{i}", f"CVE-2026-{i:04d}", dec) for i in range(n)]
+        return rows
+
+    def draw(self):
+        path = os.path.join(self.d, "risk.json")
+        write_risk(path, self.host_rows())
+        out = os.path.join(self.d, "out")
+        args = sample.argparse.Namespace(host=[f"h={path}", f"i={path}x"][:1], seed=3, size=18, out=out, allow_short=True, single_host=True)
+        self.assertEqual(sample.cmd_draw(args), 0)
+        return out
+
+    def manifest(self, out):
+        return json.load(open(os.path.join(out, "manifest.json")))
+
+    def result(self, out, allow=False):
+        """Label the sample (every row 'defer', a first row 'act'), run `result`; returns (code, printed text)."""
+        import contextlib
+        import io
+        data = json.load(open(os.path.join(out, "sample.json")))
+        rows = data["rows"]
+        sheets = []
+        for name in ("alice", "bob"):
+            sp = os.path.join(self.d, f"{name}.csv")
+            with open(sp, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=sample.SHEET_FIELDS)
+                w.writeheader()
+                for i, r in enumerate(rows):
+                    w.writerow({"id": r["id"], "answer": "act" if i == 0 else "defer"})
+            sheets.append(f"{name}={sp}")
+        args = sample.argparse.Namespace(sample=os.path.join(out, "sample.json"), reviewer=sheets, tiebreak=None, out=None,
+                                         allow_changed_scoring=allow)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = sample.cmd_result(args)
+        return rc, buf.getvalue()
+
+    def edit_manifest(self, out, change):
+        path = os.path.join(out, "sample.json")
+        data = json.load(open(path))
+        change(data["manifest"]["scoring"])
+        json.dump(data, open(path, "w"))
+
+    def test_the_manifest_records_the_files_the_thresholds_and_the_inputs(self):
+        from rpl import risk
+        sc = self.manifest(self.draw())["scoring"]
+        pkg = os.path.dirname(os.path.abspath(sample.__file__))
+        self.assertEqual(sc["files"], {"risk.py": sample.sha256_file(os.path.join(pkg, "risk.py")),
+                                       "inventory.py": sample.sha256_file(os.path.join(pkg, "inventory.py"))})
+        self.assertEqual((sc["t_act"], sc["t_plan"]), (risk.T_ACT, risk.T_PLAN))
+        self.assertEqual(sc["inputs"]["roles_file"], sample.sha256_file(os.path.join(self.d, "roles.json")))
+        self.assertEqual(sc["inputs"]["tunnel_hosts_file"], sample.sha256_file(os.path.join(self.d, "tunnel.json")))
+        self.assertEqual(sc["inputs"]["gated_hosts_file"], sample.sha256_file(os.path.join(self.d, "gated.json")))
+
+    def test_an_input_that_is_not_configured_is_recorded_as_none(self):
+        json.dump({"state_dir": os.path.join(self.d, "state")}, open(os.path.join(self.d, "rpl.json"), "w"))
+        os.remove(os.path.join(self.d, "roles.json"))                         # roles_file defaults to roles.json next to the configuration
+        self.assertEqual(self.manifest(self.draw())["scoring"]["inputs"],
+                         {"roles_file": None, "tunnel_hosts_file": None, "gated_hosts_file": None})
+
+    def test_the_published_manifest_holds_hashes_not_paths_or_contents(self):
+        text = open(os.path.join(self.draw(), "manifest.json")).read()
+        self.assertNotIn(self.d, text)
+        self.assertNotIn("a.example.org", text)
+
+    def test_the_same_score_is_accepted(self):
+        rc, text = self.result(self.draw())
+        self.assertEqual(rc, 0, text)
+        self.assertNotIn("score changed", text)
+
+    def test_a_changed_scoring_file_is_refused_and_named(self):
+        out = self.draw()
+        self.edit_manifest(out, lambda sc: sc["files"].update({"risk.py": "0" * 64}))
+        rc, text = self.result(out)
+        self.assertEqual(rc, 4, text)
+        self.assertIn("the score changed since the draw", text)
+        self.assertIn("risk.py", text)
+        self.assertNotIn("estimated for the host", text)                          # no rate is printed for another score
+
+    def test_a_changed_inventory_file_is_refused(self):
+        out = self.draw()
+        self.edit_manifest(out, lambda sc: sc["files"].update({"inventory.py": "1" * 64}))
+        rc, text = self.result(out)
+        self.assertEqual(rc, 4, text)
+        self.assertIn("inventory.py", text)
+
+    def test_a_changed_threshold_is_refused(self):
+        out = self.draw()
+        self.edit_manifest(out, lambda sc: sc.update({"t_act": 99}))
+        rc, text = self.result(out)
+        self.assertEqual(rc, 4, text)
+        self.assertIn("t_act", text)
+
+    def test_a_changed_roles_file_is_refused(self):
+        out = self.draw()
+        open(os.path.join(self.d, "roles.json"), "w").write('{"x": 2}')
+        rc, text = self.result(out)
+        self.assertEqual(rc, 4, text)
+        self.assertIn("roles_file", text)
+
+    def test_a_changed_gated_list_is_refused(self):
+        out = self.draw()
+        open(os.path.join(self.d, "gated.json"), "w").write('[]')
+        rc, text = self.result(out)
+        self.assertEqual(rc, 4, text)
+        self.assertIn("gated_hosts_file", text)
+
+    def test_an_input_not_recorded_at_the_draw_is_said_not_refused(self):
+        out = self.draw()
+        self.edit_manifest(out, lambda sc: sc["inputs"].update({"roles_file": None}))
+        rc, text = self.result(out)
+        self.assertEqual(rc, 0, text)
+        self.assertIn("roles_file was not recorded", text)
+
+    def test_the_override_goes_on_and_says_so_loudly(self):
+        out = self.draw()
+        self.edit_manifest(out, lambda sc: sc["files"].update({"risk.py": "0" * 64}))
+        rc, text = self.result(out, allow=True)
+        self.assertEqual(rc, 0, text)
+        self.assertIn("WARNING: the score changed since the draw", text)
+        self.assertIn("estimated for the host", text)
+
+    def test_a_sample_drawn_before_the_fingerprint_is_read_with_a_warning(self):
+        out = self.draw()
+        path = os.path.join(out, "sample.json")
+        data = json.load(open(path))
+        del data["manifest"]["scoring"]
+        json.dump(data, open(path, "w"))
+        rc, text = self.result(out)
+        self.assertEqual(rc, 0, text)
+        self.assertIn("drawn before the score was fingerprinted", text)
 
 
 class ResultCommandWeighted(unittest.TestCase):
