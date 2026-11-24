@@ -168,6 +168,7 @@ If an agent drives your infrastructure, give it the read-only steps and keep `--
 - [docs/for-it-leaders.md](docs/for-it-leaders.md): the short version for someone who manages infrastructure
 - [docs/design.md](docs/design.md): the loop, the decisions, the limits
 - [docs/results.md](docs/results.md): what was measured, what was not, the defects found by using it
+- [docs/integration.md](docs/integration.md): driving `rpl` from another program: commands, exit codes, configuration keys, state files, what is not promised
 
 ## License
 

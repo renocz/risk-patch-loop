@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Integration contract: `docs/integration.md`
+- New document for someone who drives `rpl` from a program of their own or moves another tool onto it: the commands and their exit codes, every configuration key, every state file with the command that writes it, the notification keys, the group declaration, and the rules for an integrator (pin a tag, a state directory of its own, one account, no automated `--approve`, read exit codes, not messages). It says what it does not cover: phase 2 (API, UI, queue), no stable schema for the state files, no private format read.
+- 7 tests (`tests/test_integration_doc.py`) keep it in step with the code: the table of keys lists exactly `config.DEFAULTS`, every state file name the code writes appears in the table, every command of `cli.COMMANDS` is listed, and both READMEs link to it. It was derived from the code and never tested against an external program.
+
 ### README test count
 - The README test count (EN and FR) is set to 634, the number of tests that pass on `main` on Python 3.11, 3.12 and 3.13 after the false-negative measure, `ignore_sockets` and the foreign state file changes (CI runs 3.9 and 3.12).
 ### Inventory: `gated_hosts_file`, hosts behind an authentication gate outside the proxy labels

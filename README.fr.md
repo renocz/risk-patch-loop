@@ -168,6 +168,7 @@ Si un agent pilote votre infrastructure, donnez-lui les étapes en lecture seule
 - [docs/fr/pour-les-dirigeants-it.md](docs/fr/pour-les-dirigeants-it.md) : l'essentiel pour un responsable, en cinq minutes
 - [docs/design.md](docs/design.md) : la boucle, les décisions, les limites (en anglais)
 - [docs/results.md](docs/results.md) : ce qui a été mesuré, ce qui ne l'a pas été, les défauts trouvés à l'usage (en anglais)
+- [docs/integration.md](docs/integration.md) : piloter `rpl` depuis un autre programme : commandes, codes de sortie, clés de configuration, fichiers d'état, ce qui n'est pas promis (en anglais)
 
 ## Licence
 
