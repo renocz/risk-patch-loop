@@ -53,6 +53,20 @@ class ReliableScan(ScanCase):
         data = json.load(open(self.findings))
         self.assertEqual((len(data["A"]), data["images"]), (2, ["app:1", "db:1"]))
 
+    def test_findings_record_the_trivy_image_and_its_database(self):
+        meta = {"UpdatedAt": "2026-11-24T02:00:00Z", "Version": 2}
+        with mock.patch.object(scan, "db_metadata", return_value=meta):
+            rc, out = self.run_scan()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(json.load(open(self.findings))["trivy"],
+                         {"image": config.load()["trivy_image"], "db_updated_at": "2026-11-24T02:00:00Z", "db_version": 2})
+
+    def test_findings_still_written_when_the_database_metadata_is_unreadable(self):
+        with mock.patch.object(scan, "db_metadata", return_value=None):
+            rc, out = self.run_scan()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(json.load(open(self.findings))["trivy"], {"image": config.load()["trivy_image"], "db_updated_at": None, "db_version": None})
+
     def test_scan_by_image_id_not_by_name(self):
         seen = []
         self.run_scan(scan_image=lambda cfg, ref: seen.append(ref) or [])

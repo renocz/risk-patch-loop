@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from rpl import sample
+from rpl import config, sample
 
 
 def finding(image, cve, decision, fixed="1.2.3", level="lan-proxy", kev=False, sensitive=False, score=50.0):
@@ -371,6 +371,83 @@ class ScoringFingerprintTest(unittest.TestCase):
         self.assertEqual(sc["inputs"]["roles_file"], sample.sha256_file(os.path.join(self.d, "roles.json")))
         self.assertEqual(sc["inputs"]["tunnel_hosts_file"], sample.sha256_file(os.path.join(self.d, "tunnel.json")))
         self.assertEqual(sc["inputs"]["gated_hosts_file"], sample.sha256_file(os.path.join(self.d, "gated.json")))
+
+    def set_config(self, **extra):
+        cfg = json.load(open(os.path.join(self.d, "rpl.json")))
+        cfg.update(extra)
+        json.dump(cfg, open(os.path.join(self.d, "rpl.json"), "w"))
+
+    def test_the_whole_procedure_through_the_command_line(self):
+        """A dry run of the procedure as it will be run: draw, two sheets, result, then an input of the score changes (exit 4), then the override."""
+        import contextlib
+        import io
+        path = os.path.join(self.d, "risk.json")
+        write_risk(path, self.host_rows())
+        out = os.path.join(self.d, "cli")
+
+        def run(argv):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                try:
+                    code = sample.main(argv)
+                except SystemExit as e:
+                    code = e.code
+            return code, buf.getvalue()
+
+        code, text = run(["draw", "--host", f"h={path}", "--single-host", "--seed", "7", "--size", "18", "--allow-short", "--out", out])
+        self.assertEqual(code, 0, text)
+        rows = json.load(open(os.path.join(out, "sample.json")))["rows"]
+        sheets = []
+        for name in ("alice", "bob"):
+            sp = os.path.join(self.d, f"{name}.csv")
+            with open(sp, "w", newline="") as fh:
+                w = csv.DictWriter(fh, fieldnames=sample.SHEET_FIELDS)
+                w.writeheader()
+                for i, r in enumerate(rows):
+                    w.writerow({"id": r["id"], "answer": "act" if i == 0 else "defer"})
+            sheets += ["--reviewer", f"{name}={sp}"]
+        sample_json = os.path.join(out, "sample.json")
+        code, text = run(["result", "--sample", sample_json] + sheets)
+        self.assertEqual(code, 0, text)
+        open(os.path.join(self.d, "roles.json"), "w").write('{"x": 2}')
+        code, text = run(["result", "--sample", sample_json] + sheets)
+        self.assertEqual(code, 4, text)
+        self.assertIn("roles_file", text)
+        code, text = run(["result", "--sample", sample_json] + sheets + ["--allow-changed-scoring"])
+        self.assertEqual(code, 0, text)
+        self.assertIn("WARNING", text)
+
+    def test_the_words_that_make_a_middleware_a_login_are_part_of_the_score(self):
+        out = self.draw()
+        self.set_config(auth_middleware_words=["auth", "sso"])
+        code, text = self.result(out)
+        self.assertEqual(code, 4, text)
+        self.assertIn("auth_middleware_words", text)
+
+    def test_the_same_middleware_words_are_accepted(self):
+        out = self.draw()
+        self.set_config(auth_middleware_words=list(config.DEFAULTS["auth_middleware_words"]))
+        code, text = self.result(out)
+        self.assertNotEqual(code, 4, text)
+
+    def test_the_order_of_the_middleware_words_does_not_matter(self):
+        out = self.draw()
+        self.set_config(auth_middleware_words=list(reversed(config.DEFAULTS["auth_middleware_words"])))
+        code, text = self.result(out)
+        self.assertNotEqual(code, 4, text)
+
+    def test_the_manifest_records_the_scan_environment_without_a_path(self):
+        os.makedirs(os.path.join(self.d, "state"))
+        json.dump({"ts": 1.0, "A": [], "B": [], "C": [], "images": [],
+                   "trivy": {"image": "ghcr.io/example/trivy:0.50.0", "db_updated_at": "2026-11-24T02:00:00Z", "db_version": 2}},
+                  open(os.path.join(self.d, "state", "findings.json"), "w"))
+        m = self.manifest(self.draw())
+        self.assertEqual(m["scan_environment"], {"trivy_image": "ghcr.io/example/trivy:0.50.0", "db_updated_at": "2026-11-24T02:00:00Z",
+                                                 "db_version": 2, "findings_ts": 1.0})
+        self.assertNotIn(self.d, json.dumps(m))
+
+    def test_a_scan_environment_that_is_not_known_is_recorded_as_none(self):
+        self.assertIsNone(self.manifest(self.draw())["scan_environment"])
 
     def test_an_input_that_is_not_configured_is_recorded_as_none(self):
         json.dump({"state_dir": os.path.join(self.d, "state")}, open(os.path.join(self.d, "rpl.json"), "w"))

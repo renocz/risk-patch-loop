@@ -41,11 +41,11 @@ scan ──► inventaire ──► score de risque ──► vérif. du correct
 - **Je veux voir comment il décide :** [docs/design.md](docs/design.md) (en anglais : la boucle, les décisions, les limites).
 - **Un agent IA pilote mon infrastructure :** donnez-lui les étapes en lecture seule et gardez `--apply` derrière une approbation qu'il ne peut pas s'accorder lui-même, voir [Avec un agent IA](#avec-un-agent-ia).
 
-## État : v0.9, un hôte, des chiffres honnêtes
+## État : v0.10, un hôte, des chiffres honnêtes
 
 Construit et utilisé pendant une semaine sur un hôte Docker (65 conteneurs, Traefik, un propriétaire). **Lisez [docs/results.md](docs/results.md) avant de lui faire confiance** (en anglais) : le score n'est **pas validé**. Il est d'accord avec les verdicts de son propriétaire 14 fois sur 20, mais une réponse triviale « toujours différer » en obtient 13 : cela ne montre encore aucune valeur ajoutée ; les rôles ont aussi été réglés après avoir vu ces verdicts. Le retour arrière automatique n'a jamais été déclenché sur un vrai service. Il gère Docker Compose + Traefik, Docker Hub et ghcr.io.
 
-Testé : 634 tests automatiques contre un faux hôte Docker (enchaînement et refus), lancés en CI sur Python 3.9 et 3.12 ; quelques comportements ont aussi été vérifiés à la main sur un vrai Docker (voir les limites ci-dessous).
+Testé : 676 tests automatiques contre un faux hôte Docker (enchaînement et refus), lancés en CI sur Python 3.9 et 3.12 ; quelques comportements ont aussi été vérifiés à la main sur un vrai Docker (voir les limites ci-dessous).
 
 ## Limites connues
 

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 0.10.0 (2026-11-24)
+
+The score is fixed at this version for the false-negative measure, as far as the manifest of a draw can check it: `rpl/risk.py`, `rpl/inventory.py`, the thresholds (ACT 45, PLAN 25), the roles, tunnel and gate files named in the configuration, and `auth_middleware_words`. `rpl sample result` refuses by default (exit 4) to describe a score whose fingerprint differs from the draw's, and `--allow-changed-scoring` goes on with a loud warning. It does not cover `config.py`, `scan.py`, image digests or the host, and the lists remain editable files: the freeze is a rule the tool checks, not a lock. Added since 0.9.0: update groups (`rpl group`), pause switch and shared lock, `rpl watch` and `rpl notify`, the false-negative measure (`rpl sample`), `gated_hosts_file`, `docs/integration.md`.
+
+### Review by a council before the freeze
+- Four models reviewed the freeze and said "correct first". Taken: `auth_middleware_words` was missing from the fingerprint (a real gap, found by checking what the score reads); the manifest now records the scan environment (Trivy image, database version and date, scan time, from a new `trivy` block in `findings.json`); `docs/results.md` states what the fingerprint covers and does not, why 10%, the three outcomes of the decision rule, and what is measured. Not taken: a grid, an `unsure` answer and a third reviewer already exist; the manifest already hashes the inputs.
+- 8 new tests: 5 on the fingerprint and the scan environment (different words refused, same words and a different order accepted, the manifest record with and without findings), 2 on the scan record, and 1 that runs the procedure through the command line. 5 failed or errored before (the middleware words, the two manifest records, the two scan records); the other 3 pin what must keep holding (they passed at once). Of 6 removals of the rules, 6 fail a test.
+
+### Release
+- Version 0.10.0 in `pyproject.toml` and `rpl/__init__.py`; two new tests (`tests/test_version.py`) keep them equal and require a CHANGELOG section for the version (the second was green before the bump, the first failed with the bump in only one file).
+- The README test count (EN and FR) is set to 676, the number of tests that pass on `main` plus this change, on Python 3.11, 3.12 and 3.13; status line is v0.10.
+
 ### False-negative measure: the manifest fingerprints the score, `result` refuses another one
 - The measure of roadmap criterion 2 describes ONE score, frozen before the draw. The manifest of `rpl sample draw` now records `scoring`: the SHA-256 of `rpl/risk.py` and `rpl/inventory.py` (what turns findings and containers into a level and a decision), the thresholds `t_act` and `t_plan`, and the SHA-256 of the owner's `roles_file`, `tunnel_hosts_file` and `gated_hosts_file` named in the configuration (`null` when one is not configured or does not exist). Hashes only: the manifest is published and holds neither a path nor the content of a list.
 - `rpl sample result` compares that fingerprint with the current code and configuration. A change in a module, a threshold or an input file is refused (exit 4), naming what changed, and no rate is printed; `--allow-changed-scoring` goes on and prints a loud warning that the numbers describe the score of the draw. An input that one side does not record or configure is said, not refused. A sample drawn before this change is read with a warning that it cannot be checked. Both commands must run with the configuration that produced the `risk.json` (`RPL_CONFIG`).
