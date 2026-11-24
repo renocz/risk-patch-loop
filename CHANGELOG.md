@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.10.0 (2026-11-24)
+
+The score is frozen at this version for the false-negative measure: `rpl/risk.py`, `rpl/inventory.py`, the thresholds (ACT 45, PLAN 25) and the owner's roles, tunnel and gate lists. Changing any of them after a draw is refused by `rpl sample result` (exit 4). Added since 0.9.0: update groups (`rpl group`), pause switch and shared lock, `rpl watch` and `rpl notify`, the false-negative measure (`rpl sample`), `gated_hosts_file`, `docs/integration.md`.
+
+### Release
+- Version 0.10.0 in `pyproject.toml` and `rpl/__init__.py`; two new tests (`tests/test_version.py`) keep them equal and require a CHANGELOG section for the version (the second was green before the bump, the first failed with the bump in only one file).
+- The README test count (EN and FR) is set to 668, the number of tests that pass on `main` plus this change, on Python 3.11, 3.12 and 3.13; status line is v0.10.
+
 ### False-negative measure: the manifest fingerprints the score, `result` refuses another one
 - The measure of roadmap criterion 2 describes ONE score, frozen before the draw. The manifest of `rpl sample draw` now records `scoring`: the SHA-256 of `rpl/risk.py` and `rpl/inventory.py` (what turns findings and containers into a level and a decision), the thresholds `t_act` and `t_plan`, and the SHA-256 of the owner's `roles_file`, `tunnel_hosts_file` and `gated_hosts_file` named in the configuration (`null` when one is not configured or does not exist). Hashes only: the manifest is published and holds neither a path nor the content of a list.
 - `rpl sample result` compares that fingerprint with the current code and configuration. A change in a module, a threshold or an input file is refused (exit 4), naming what changed, and no rate is printed; `--allow-changed-scoring` goes on and prints a loud warning that the numbers describe the score of the draw. An input that one side does not record or configure is said, not refused. A sample drawn before this change is read with a warning that it cannot be checked. Both commands must run with the configuration that produced the `risk.json` (`RPL_CONFIG`).

@@ -41,11 +41,11 @@ scan ──► inventory ──► risk score ──► fix check ──► prop
 - **I want to see how it decides:** [docs/design.md](docs/design.md) (the loop, the decisions, the limits).
 - **An AI agent drives my infrastructure:** give it the read-only steps and keep `--apply` behind an approval it cannot grant itself, see [With an AI agent](#with-an-ai-agent).
 
-## Status: v0.9, one host, honest numbers
+## Status: v0.10, one host, honest numbers
 
 Built and used for one week on one Docker host (65 containers, Traefik, one owner). **Read [docs/results.md](docs/results.md) before trusting it**: the score is **not validated**. It agrees with its owner's verdicts 14 times out of 20, but a trivial "always defer" answer gets 13, so this shows no added value yet; the roles were also tuned after seeing those verdicts. The automatic rollback has never fired on a real service. It handles Docker Compose + Traefik, Docker Hub and ghcr.io.
 
-Tested: 634 automated tests against a fake Docker host (sequencing and refusals), run in CI on Python 3.9 and 3.12; a few behaviours were also checked by hand on real Docker (see the limits below).
+Tested: 668 automated tests against a fake Docker host (sequencing and refusals), run in CI on Python 3.9 and 3.12; a few behaviours were also checked by hand on real Docker (see the limits below).
 
 ## Known limits
 
