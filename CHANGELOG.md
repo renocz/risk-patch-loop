@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Docs: AccuracySec measured, the apply duration and the real group read from the code
+- Measured on the host (24 November 2026): a one-minute `rpl watch` timer ran 25 times in 30 minutes without `AccuracySec` (gaps up to 92.6 s) and 31 times with `AccuracySec=1s` (gaps of 60 to 61 s): the cause of the missing runs is confirmed and the setting of the example unit works. `docs/trial/notify.md` has the numbers and the right way to read the setting (`-p AccuracyUSec` on systemd 252).
+- Three complete applies of the trial group took 3.5 to 3.6 s: the fixed cost of the tool, not a real apply. `docs/results.md` records what the code says about the real VPN group (only bind mounts under the compose directory are backed up; above `group_backup_max_mb` the plan is refused) and a computed bound for the 60-minute grace (about 2 x members x `health_timeout_s`); neither was run on that group.
+
 ### README test count
 - The README test count (EN and FR) was left at 529 while the notifications series was merged in several pull requests; it is set to 586, the number of tests that pass on `main` on Python 3.11, 3.12 and 3.13 (CI runs 3.9 and 3.12).
 
