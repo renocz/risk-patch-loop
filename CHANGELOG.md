@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Draw plan
+- `docs/results.md` records, before the draw, the inputs of the measure on the author's host (scan environment, SHA-256 of the files), the way the gate list was derived from a private format (hosts that answered 401 only), the draw (size 100, seed from the tag object id), the labelling and the reading rules. Documentation only.
+
 ## 0.10.0 (2026-11-24)
 
 The score is fixed at this version for the false-negative measure, as far as the manifest of a draw can check it: `rpl/risk.py`, `rpl/inventory.py`, the thresholds (ACT 45, PLAN 25), the roles, tunnel and gate files named in the configuration, and `auth_middleware_words`. `rpl sample result` refuses by default (exit 4) to describe a score whose fingerprint differs from the draw's, and `--allow-changed-scoring` goes on with a loud warning. It does not cover `config.py`, `scan.py`, image digests or the host, and the lists remain editable files: the freeze is a rule the tool checks, not a lock. Added since 0.9.0: update groups (`rpl group`), pause switch and shared lock, `rpl watch` and `rpl notify`, the false-negative measure (`rpl sample`), `gated_hosts_file`, `docs/integration.md`.
