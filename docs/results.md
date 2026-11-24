@@ -317,6 +317,18 @@ With the public code at `3b17cdd` on the owner's host, the real inputs (tunnel l
 
 **What the plan means.** To update one helper's `curl` the group apply recreates the VPN and its six dependants (parent first, then every dependant). That is by design: a parent recreated leaves its dependants in a dead network namespace. A mode that recreates only the dependants with a new image, leaving the parent alone, would be safe for a dependant that is the only one to change; it does not exist (every member is refused by `rpl patch`, and `rpl group` always applies the whole group). Not decided.
 
+### Before the draw: what the freeze covers, and how the result will be read (24 November 2026)
+
+A council review (four models) of the 0.10.0 freeze asked for these to be written before the draw, not after. Two points it raised were already in the code (a written grid, an `unsure` answer reported both ways, a third reviewer who has not seen the other sheets, reviewers who do not see the score; the manifest already hashes the `risk.json` and the criteria). The others were real and are done or written here.
+
+- **What the fingerprint now covers:** `rpl/risk.py`, `rpl/inventory.py`, the thresholds, the roles, tunnel and gate files, and the configuration value `auth_middleware_words` (hashed, order ignored: it decides which middleware counts as a login, so it moves findings between `internet-auth` and `internet-no-auth`; it was missing from the first version of the fingerprint). The manifest also records the scan environment read from `findings.json`: the Trivy image reference, the version and update date of its vulnerability database, and the time of the scan (`scan_environment`; `null` when the findings predate this change or are not in the configured state directory). This records what the findings were made with; it does not make the Trivy result reproducible, because a database changes daily.
+- **What it does not cover:** `rpl/config.py` (its defaults change whenever a key is added, a hash of it would refuse for no reason; only the value the score reads is hashed), `rpl/scan.py`, image digests, the Docker host itself. A change there is not refused.
+- **Why 10%:** it is a threshold the author chose, not derived. It is the level at which, if one "act" verdict in ten is ranked below ACT, the score is not usable as a filter before a human reads the list. It can be argued; the argument belongs in an issue, before the draw, not after.
+- **Three outcomes, named in advance.** (1) *Established excess*: the lower end of the 95% interval is above 10%: the score changes and the measure is repeated. (2) *Inconclusive*: the lower end is at or below 10% and the upper end above 10%: published as it is, saying it shows neither a high nor a low rate. (3) *Low rate supported*: the upper end is at or below 10%: published as such; with the sizes of a host like the author's this is not expected to happen, and the text will say so if it does not.
+- **What is measured:** the share of "act" verdicts among the findings ranked PLAN or WATCH, weighted by stratum, which is the rate of missed findings among those not ranked ACT; not the share of non-ACT among all findings to act on.
+- **Dry run:** the procedure (draw, two sheets, result, a changed input giving exit 4, the override) now runs end to end through the command line in a test, on invented data. It was not run on the author's host.
+- **Not covered by anything above:** that two reviewers read "to act" the same way. The agreement between the two sheets is printed by `rpl sample result` (disagreements go to the third reviewer); no threshold is set for it.
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.

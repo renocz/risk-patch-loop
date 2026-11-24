@@ -82,7 +82,7 @@ In `state_dir`. "Written by" is the command that creates or changes it. All are 
 
 | File | Written by | Notes |
 |---|---|---|
-| `findings.json` | `scan` | not written when the scan is UNRELIABLE |
+| `findings.json` | `scan` | not written when the scan is UNRELIABLE; records the Trivy image and its database version (`trivy`) |
 | `kev.json` | `scan` | the KEV list, kept for when the feed is unavailable |
 | `inventory.json` | `inventory` | one entry per container: level, hosts, `auth`, `gated`, ports |
 | `risk.json` | `risk` | the rows (score, decision) and a summary; the input of `sample draw` |

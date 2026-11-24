@@ -103,13 +103,28 @@ def scan_image(cfg, ref):
     return [v for r in (d.get("Results") or []) for v in (r.get("Vulnerabilities") or [])]
 
 
-def db_age_hours(cfg):
+def db_metadata(cfg):
+    """The Trivy vulnerability database's own metadata (UpdatedAt, Version), or None when it cannot be read."""
     try:
         m = json.load(open(os.path.join(cfg["trivy_cache"], "db", "metadata.json")))
+        return m if isinstance(m, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def db_age_hours(cfg):
+    try:
+        m = db_metadata(cfg)
         t = datetime.datetime.fromisoformat(m["UpdatedAt"].replace("Z", "+00:00"))
         return (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() / 3600
-    except (OSError, ValueError, KeyError):
+    except (TypeError, ValueError, KeyError):
         return None
+
+
+def trivy_record(cfg):
+    """What the findings were produced with: the scanner image and the database version, so a measure can say which."""
+    m = db_metadata(cfg) or {}
+    return {"image": cfg["trivy_image"], "db_updated_at": m.get("UpdatedAt"), "db_version": m.get("Version")}
 
 
 def load_kev(cfg):
@@ -151,7 +166,7 @@ def main(argv):
     if dry or reasons:
         return 1 if reasons else 0
     with open(config.state(cfg, "findings.json"), "w") as f:
-        json.dump({"ts": time.time(), "A": A, "B": B, "C": C, "images": sorted(ids)}, f)
+        json.dump({"ts": time.time(), "A": A, "B": B, "C": C, "images": sorted(ids), "trivy": trivy_record(cfg)}, f)
     return 0
 
 

@@ -31,6 +31,7 @@ CRITERIA = os.path.join("docs", "labelling-criteria.md")
 
 SCORING_FILES = ("risk.py", "inventory.py")           # the code that turns findings and containers into a level and a decision
 SCORING_INPUTS = ("roles_file", "tunnel_hosts_file", "gated_hosts_file")
+SCORING_SETTINGS = ("auth_middleware_words",)         # configuration values the score reads (inventory.py): hashed, order ignored
 
 
 def scoring_fingerprint(cfg):
@@ -41,8 +42,12 @@ def scoring_fingerprint(cfg):
     for key in SCORING_INPUTS:
         path = (cfg or {}).get(key)
         inputs[key] = sha256_file(path) if path and os.path.exists(path) else None
+    settings = {}
+    for key in SCORING_SETTINGS:
+        value = (cfg or {}).get(key)
+        settings[key] = None if value is None else hashlib.sha256(json.dumps(sorted(value) if isinstance(value, list) else value).encode()).hexdigest()
     return {"files": {name: sha256_file(os.path.join(pkg, name)) for name in SCORING_FILES},
-            "t_act": risk.T_ACT, "t_plan": risk.T_PLAN, "inputs": inputs}
+            "t_act": risk.T_ACT, "t_plan": risk.T_PLAN, "inputs": inputs, "settings": settings}
 
 
 def scoring_changes(recorded, now):
@@ -61,7 +66,25 @@ def scoring_changes(recorded, now):
                 unknown.append(key)
         elif then != current:
             changes.append(f"{key} is not the file the sample was drawn with")
+    for key in SCORING_SETTINGS:
+        then, current = (recorded.get("settings") or {}).get(key), (now.get("settings") or {}).get(key)
+        if then is None or current is None:
+            if then != current:
+                unknown.append(key)
+        elif then != current:
+            changes.append(f"{key} is not the setting the sample was drawn with")
     return changes, unknown
+
+
+def scan_environment(cfg):
+    """What the findings behind the draw were scanned with, from findings.json of the configured state directory (None when unknown).
+    No path: the manifest is published."""
+    try:
+        data = json.load(open(config.state(cfg, "findings.json")))
+        t = data["trivy"]
+        return {"trivy_image": t.get("image"), "db_updated_at": t.get("db_updated_at"), "db_version": t.get("db_version"), "findings_ts": data.get("ts")}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
 
 
 def _config():
@@ -290,7 +313,7 @@ def cmd_draw(args):
                 "hosts": len(hosts), "single_host": len(hosts) < 2,
                 "strata": res["strata"], "available_with_fix": res["available"],
                 "inputs": {name: sha256_file(path) for name, path in pairs},
-                "criteria_sha256": sha256_file(CRITERIA), "scoring": scoring_fingerprint(_config()),
+                "criteria_sha256": sha256_file(CRITERIA), "scoring": scoring_fingerprint(_config()), "scan_environment": scan_environment(_config()),
                 "ids": sorted(r["id"] for r in res["rows"])}
     with open(os.path.join(args.out, "sample.json"), "w") as f:
         json.dump({"manifest": manifest, "rows": res["rows"]}, f, ensure_ascii=False, indent=1, sort_keys=True)
