@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Labelling record
+- `docs/results.md` records, before the tie-break and before any rate, the author's sheet (100 `defer`, a criterion other than the written ones, said so), the damage a spreadsheet did to the returned file and its mechanical repair, the panel (three families, one attempt each, counts only), the result run that stopped without a third reviewer, and how the final number will and will not be read. Documentation only.
+
 ### `rpl sample panel`: the panel of models becomes one reviewer's sheet by a written rule
 - The criteria ask for a panel of models from at least 3 families whose majority counts as ONE reviewer, but nothing built that sheet. `rpl sample panel --sample S --model NAME=sheet.csv ... --out panel.csv` (3 models or more, each sheet validated like a reviewer's, a name used twice refused, nothing written on an error): the strictly most voted answer wins, a shared top is `unsure`, the votes go in `notes`, no model name is written. It prints the rows where all models agree and each model's agreement with the majority. `docs/panel-prompt.md` holds the prompt given to every model.
 - 9 new tests (`PanelTest`); 6 failed or errored before, the other 3 pin refusals that argparse already gave; of 6 removals of the rules, 6 fail a test (a first run left one survivor, the zero-vote entries in `notes`; fixed). Suite 692, Python 3.11.
