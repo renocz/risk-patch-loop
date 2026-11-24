@@ -99,8 +99,8 @@ class DrawTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             sample.draw(small, 100, 1)
         res = sample.draw(small, 100, 1, allow_short=True)
-        self.assertEqual(res["strata"]["ACT"], 6)
-        self.assertEqual(len(res["rows"]), 12)
+        self.assertEqual(res["strata"], {"ACT": 6, "PLAN": 6, "WATCH": 6})
+        self.assertEqual(len(res["rows"]), 18)                              # everything there is: ACT and the rest no longer have to be equally numerous
 
     def test_the_reviewers_sheet_has_no_score_and_no_decision_and_is_not_in_strata_order(self):
         res = sample.draw(self.hosts(), 100, 3)
@@ -134,6 +134,226 @@ class DrawTest(unittest.TestCase):
         self.assertEqual(len(manifest["ids"]), 100)
         self.assertEqual(set(manifest["inputs"]), {"home", "lab"})
         self.assertNotIn("score", open(os.path.join(out, "manifest.json")).read())
+
+
+class WeightedRateTest(unittest.TestCase):
+    """The draw takes as many ACT rows as PLAN + WATCH rows, whatever their number in the host. A rate computed from that sample without
+    weights treats the strata as equal in size and reports far too few misses when the rows below ACT are much more numerous."""
+
+    def build(self, act, plan, watch, sizes=(50, 25, 25)):
+        """act, plan, watch: how many 'act' answers in each stratum; sizes: how many rows were labelled in each."""
+        rows, truth = [], {}
+        for decision, hits, n in (("ACT", act, sizes[0]), ("PLAN", plan, sizes[1]), ("WATCH", watch, sizes[2])):
+            for i in range(n):
+                ident = f"{decision}{i}"
+                rows.append({"id": ident, "decision": decision})
+                truth[ident] = "act" if i < hits else "defer"
+        return rows, truth
+
+    def test_the_unweighted_rate_understates_when_the_rows_below_act_are_far_more_numerous(self):
+        rows, truth = self.build(30, 2, 1)
+        unweighted = sample.rate(rows, truth, False)
+        weighted = sample.weighted_rate(rows, truth, {"ACT": 200, "PLAN": 1000, "WATCH": 1000}, False)
+        self.assertAlmostEqual(unweighted["rate"], 3 / 33)                     # about 9 %: "target met"
+        self.assertAlmostEqual(weighted["estimate"], 0.5)                      # (1000*2/25 + 1000*1/25) / (200*30/50 + 80 + 40)
+
+    def test_with_strata_as_large_as_their_samples_both_rates_agree(self):
+        rows, truth = self.build(30, 2, 1)
+        weighted = sample.weighted_rate(rows, truth, {"ACT": 50, "PLAN": 25, "WATCH": 25}, False)
+        self.assertAlmostEqual(weighted["estimate"], 3 / 33)
+
+    def test_no_act_answer_gives_no_estimate(self):
+        rows, truth = self.build(0, 0, 0)
+        w = sample.weighted_rate(rows, truth, {"ACT": 200, "PLAN": 1000, "WATCH": 1000}, False)
+        self.assertIsNone(w["estimate"])
+        self.assertIsNone(w["ci95"])
+
+    def test_the_interval_contains_the_estimate_and_stays_between_zero_and_one(self):
+        rows, truth = self.build(30, 2, 1)
+        w = sample.weighted_rate(rows, truth, {"ACT": 200, "PLAN": 1000, "WATCH": 1000}, False)
+        lo, hi = w["ci95"]
+        self.assertLessEqual(0.0, lo)
+        self.assertLess(lo, w["estimate"])
+        self.assertLess(w["estimate"], hi)
+        self.assertLessEqual(hi, 1.0)
+
+    def test_the_interval_ends_are_the_ones_worked_out_by_hand(self):
+        """Wilson per stratum at z = 2.394: ACT 30/50 -> 0.4323 to 0.7472, PLAN 2/25 -> 0.0174 to 0.2993, WATCH 1/25 -> 0.0053 to 0.2463; the ends of
+        the ratio at the corners: 22.65 / (22.65 + 149.44) and 545.55 / (545.55 + 86.46)."""
+        rows, truth = self.build(30, 2, 1)
+        lo, hi = sample.weighted_rate(rows, truth, {"ACT": 200, "PLAN": 1000, "WATCH": 1000}, False)["ci95"]
+        self.assertAlmostEqual(lo, 0.1316, places=3)
+        self.assertAlmostEqual(hi, 0.8632, places=3)
+
+    def test_the_interval_covers_the_true_rate_at_least_95_percent_of_the_time(self):
+        """Simulated labelling (fixed seed): the true host rate is known, the sample is drawn as the draw does (50 ACT, 25 PLAN, 25 WATCH)."""
+        import random
+        for (pa, pp, pw), avail in (((0.6, 0.08, 0.04), (200, 1000, 1000)), ((0.6, 0.02, 0.01), (200, 1000, 1000)), ((0.7, 0.10, 0.05), (300, 500, 1500))):
+            rng = random.Random(1)
+            true = (avail[1] * pp + avail[2] * pw) / (avail[0] * pa + avail[1] * pp + avail[2] * pw)
+            covered = trials = 0
+            for _ in range(400):
+                rows, truth = [], {}
+                for dec, p, n in (("ACT", pa, 50), ("PLAN", pp, 25), ("WATCH", pw, 25)):
+                    for i in range(n):
+                        rid = f"{dec}{i}"
+                        rows.append({"id": rid, "decision": dec})
+                        truth[rid] = "act" if rng.random() < p else "defer"
+                w = sample.weighted_rate(rows, truth, {"ACT": avail[0], "PLAN": avail[1], "WATCH": avail[2]}, False)
+                if w["estimate"] is None:
+                    continue
+                trials += 1
+                covered += w["ci95"][0] <= true <= w["ci95"][1]
+            self.assertGreaterEqual(covered / trials, 0.95, (pa, pp, pw))
+
+    def test_the_interval_is_not_a_point_when_no_miss_was_found(self):
+        """0 misses in 50 labelled rows below ACT does not mean a rate of 0."""
+        rows, truth = self.build(30, 0, 0)
+        w = sample.weighted_rate(rows, truth, {"ACT": 200, "PLAN": 1000, "WATCH": 1000}, False)
+        self.assertEqual(w["estimate"], 0.0)
+        self.assertGreater(w["ci95"][1], 0.2)                                  # with 1000+1000 rows below ACT, 50 labelled: wide
+
+    def test_more_labels_with_the_same_proportions_narrow_the_interval(self):
+        small = sample.weighted_rate(*self.build(30, 2, 1), {"ACT": 200, "PLAN": 1000, "WATCH": 1000}, False)
+        big = sample.weighted_rate(*self.build(120, 8, 4, sizes=(200, 100, 100)), {"ACT": 200, "PLAN": 1000, "WATCH": 1000}, False)
+        self.assertAlmostEqual(small["estimate"], big["estimate"])
+        self.assertLess(big["ci95"][1] - big["ci95"][0], small["ci95"][1] - small["ci95"][0])
+
+    def test_unsure_counted_as_act_raises_the_estimate(self):
+        rows, truth = self.build(30, 2, 1)
+        truth["PLAN5"] = "unsure"
+        avail = {"ACT": 200, "PLAN": 1000, "WATCH": 1000}
+        self.assertGreater(sample.weighted_rate(rows, truth, avail, True)["estimate"], sample.weighted_rate(rows, truth, avail, False)["estimate"])
+
+    def test_without_the_population_sizes_no_weighted_estimate_is_made(self):
+        rows, truth = self.build(30, 2, 1)
+        for avail in (None, {}, {"ACT": 200}, {"ACT": 200, "PLAN": "x", "WATCH": 1}):
+            with self.subTest(avail=avail):
+                w = sample.weighted_rate(rows, truth, avail, False)
+                self.assertIsNone(w["estimate"])
+                self.assertIn("reason", w)
+
+    def test_a_stratum_that_exists_in_the_host_but_was_not_labelled_is_reported(self):
+        rows, truth = self.build(30, 2, 0, sizes=(50, 25, 0))
+        w = sample.weighted_rate(rows, truth, {"ACT": 200, "PLAN": 1000, "WATCH": 1000}, False)
+        self.assertIsNone(w["estimate"])
+        self.assertIn("WATCH", w["reason"])
+
+    def test_an_empty_stratum_in_the_host_is_not_a_problem(self):
+        rows, truth = self.build(30, 2, 0, sizes=(50, 25, 0))
+        w = sample.weighted_rate(rows, truth, {"ACT": 200, "PLAN": 1000, "WATCH": 0}, False)
+        self.assertIsNotNone(w["estimate"])
+
+
+class FeasibleDrawTest(unittest.TestCase):
+    """A host with few ACT rows (18 of 2,142 in the case that prompted this): the draw takes all of them and fills up to the size with rows
+    below ACT, instead of refusing because ACT and PLAN + WATCH cannot be equally numerous. The result weights the strata."""
+
+    def host(self, n_act, n_plan, n_watch):
+        rows = []
+        for dec, n in (("ACT", n_act), ("PLAN", n_plan), ("WATCH", n_watch)):
+            rows += [dict(finding(f"{dec}/i{i}", f"CVE-2026-{i:04d}", dec), host="h", id=f"{dec}{i}") for i in range(n)]
+        return {"h": rows}
+
+    def test_few_act_rows_are_all_drawn_and_the_rest_comes_from_below_act(self):
+        res = sample.draw(self.host(18, 222, 1902), 100, 7, allow_single_host=True)
+        self.assertEqual(res["strata"], {"ACT": 18, "PLAN": 41, "WATCH": 41})
+        self.assertEqual(len(res["rows"]), 100)
+        self.assertEqual({r["id"] for r in res["rows"] if r["decision"] == "ACT"}, {f"ACT{i}" for i in range(18)})
+
+    def test_a_small_plan_stratum_is_drawn_whole_and_watch_fills_the_rest(self):
+        res = sample.draw(self.host(10, 5, 500), 100, 7, allow_single_host=True)
+        self.assertEqual(res["strata"], {"ACT": 10, "PLAN": 5, "WATCH": 85})
+
+    def test_a_small_watch_stratum_is_drawn_whole_and_plan_fills_the_rest(self):
+        res = sample.draw(self.host(10, 500, 5), 100, 7, allow_single_host=True)
+        self.assertEqual(res["strata"], {"ACT": 10, "PLAN": 85, "WATCH": 5})
+        self.assertEqual(len(res["rows"]), 100)
+
+    def test_with_many_act_rows_the_halves_are_still_equal(self):
+        res = sample.draw(self.host(300, 300, 300), 100, 7, allow_single_host=True)
+        self.assertEqual(res["strata"], {"ACT": 50, "PLAN": 25, "WATCH": 25})
+
+    def test_an_odd_size_is_met_exactly(self):
+        res = sample.draw(self.host(300, 300, 300), 101, 7, allow_single_host=True)
+        self.assertEqual(len(res["rows"]), 101)
+        self.assertEqual(res["strata"]["ACT"], 50)
+
+    def test_too_few_findings_overall_is_still_refused_unless_a_trial_draw(self):
+        with self.assertRaises(SystemExit) as cm:
+            sample.draw(self.host(10, 20, 30), 100, 7, allow_single_host=True)
+        self.assertIn("--allow-short", str(cm.exception))
+        self.assertEqual(len(sample.draw(self.host(10, 20, 30), 100, 7, allow_short=True, allow_single_host=True)["rows"]), 60)
+
+    def test_the_draw_is_still_deterministic(self):
+        a = sample.draw(self.host(18, 222, 1902), 100, 7, allow_single_host=True)["rows"]
+        b = sample.draw(self.host(18, 222, 1902), 100, 7, allow_single_host=True)["rows"]
+        self.assertEqual([r["id"] for r in a], [r["id"] for r in b])
+
+    def test_the_manifest_gives_the_population_sizes_the_weights_need(self):
+        res = sample.draw(self.host(18, 222, 1902), 100, 7, allow_single_host=True)
+        self.assertEqual(res["available"], {"ACT": 18, "PLAN": 222, "WATCH": 1902})
+
+
+class ResultCommandWeighted(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.d = self.tmp.name
+
+    def run_result(self, available, with_strata=True, unsure=(), misses=True):
+        rows = []
+        for decision, n in (("ACT", 50), ("PLAN", 25), ("WATCH", 25)):
+            rows += [{"id": f"{decision}{i}", "decision": decision} for i in range(n)]
+        manifest = {"available_with_fix": available} if with_strata else {}
+        path = os.path.join(self.d, "sample.json")
+        json.dump({"manifest": manifest, "rows": rows}, open(path, "w"))
+        acts = {f"ACT{i}" for i in range(30)} | ({"PLAN0", "PLAN1", "WATCH0"} if misses else set())
+        sheets = []
+        for name in ("alice", "bob"):
+            sp = os.path.join(self.d, f"{name}.csv")
+            with open(sp, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=sample.SHEET_FIELDS)
+                w.writeheader()
+                for r in rows:
+                    w.writerow({"id": r["id"], "answer": "act" if r["id"] in acts else ("unsure" if r["id"] in unsure else "defer")})
+            sheets.append(f"{name}={sp}")
+        out = os.path.join(self.d, "out.json")
+        args = sample.argparse.Namespace(sample=path, reviewer=sheets, tiebreak=None, out=out)
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = sample.cmd_result(args)
+        return rc, buf.getvalue(), json.load(open(out))
+
+    def test_the_command_prints_the_estimate_for_the_host_and_judges_the_target_on_it(self):
+        rc, text, out = self.run_result({"ACT": 200, "PLAN": 1000, "WATCH": 1000})
+        self.assertEqual(rc, 0)
+        self.assertIn("estimated for the host", text)
+        self.assertIn("50.0%", text)
+        self.assertIn("in the sample", text)                                   # the unweighted number is still shown, said to be about the sample
+        self.assertIn("decision rule (unsure as defer): the lower end of the interval (13.2%) is above 10%: the score must change", text)
+        self.assertAlmostEqual(out["weighted"]["unsure_as_defer"]["estimate"], 0.5)
+
+    def test_a_low_lower_end_requires_no_change_and_says_it_does_not_show_a_low_rate(self):
+        rc, text, out = self.run_result({"ACT": 18, "PLAN": 20, "WATCH": 30}, misses=False)
+        self.assertEqual(rc, 0)
+        self.assertIn("decision rule (unsure as defer): the lower end of the interval (0.0%) is not above 10%: the rule requires no change", text)
+        self.assertIn("does not show that the rate is under 10%", text)
+        self.assertRegex(text, r"\(upper end \d+\.\d%\)")
+
+    def test_unsure_counted_as_act_gives_a_higher_estimate_for_the_host(self):
+        rc, text, out = self.run_result({"ACT": 200, "PLAN": 1000, "WATCH": 1000}, unsure={"PLAN5", "PLAN6", "WATCH5"})
+        self.assertEqual(rc, 0)
+        self.assertGreater(out["weighted"]["unsure_as_act"]["estimate"], out["weighted"]["unsure_as_defer"]["estimate"])
+
+    def test_without_population_sizes_the_command_says_it_cannot_estimate_for_the_host(self):
+        rc, text, out = self.run_result(None, with_strata=False)
+        self.assertEqual(rc, 0)
+        self.assertIn("cannot be estimated for the host", text)
+        self.assertIn("the decision rule cannot be applied", text)
+        self.assertNotIn("host estimate", text)
 
 
 class ResultTest(unittest.TestCase):
