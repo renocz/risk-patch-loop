@@ -99,8 +99,8 @@ class DrawTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             sample.draw(small, 100, 1)
         res = sample.draw(small, 100, 1, allow_short=True)
-        self.assertEqual(res["strata"]["ACT"], 6)
-        self.assertEqual(len(res["rows"]), 12)
+        self.assertEqual(res["strata"], {"ACT": 6, "PLAN": 6, "WATCH": 6})
+        self.assertEqual(len(res["rows"]), 18)                              # everything there is: ACT and the rest no longer have to be equally numerous
 
     def test_the_reviewers_sheet_has_no_score_and_no_decision_and_is_not_in_strata_order(self):
         res = sample.draw(self.hosts(), 100, 3)
@@ -245,20 +245,70 @@ class WeightedRateTest(unittest.TestCase):
         self.assertIsNotNone(w["estimate"])
 
 
+class FeasibleDrawTest(unittest.TestCase):
+    """A host with few ACT rows (18 of 2,142 in the case that prompted this): the draw takes all of them and fills up to the size with rows
+    below ACT, instead of refusing because ACT and PLAN + WATCH cannot be equally numerous. The result weights the strata."""
+
+    def host(self, n_act, n_plan, n_watch):
+        rows = []
+        for dec, n in (("ACT", n_act), ("PLAN", n_plan), ("WATCH", n_watch)):
+            rows += [dict(finding(f"{dec}/i{i}", f"CVE-2026-{i:04d}", dec), host="h", id=f"{dec}{i}") for i in range(n)]
+        return {"h": rows}
+
+    def test_few_act_rows_are_all_drawn_and_the_rest_comes_from_below_act(self):
+        res = sample.draw(self.host(18, 222, 1902), 100, 7, allow_single_host=True)
+        self.assertEqual(res["strata"], {"ACT": 18, "PLAN": 41, "WATCH": 41})
+        self.assertEqual(len(res["rows"]), 100)
+        self.assertEqual({r["id"] for r in res["rows"] if r["decision"] == "ACT"}, {f"ACT{i}" for i in range(18)})
+
+    def test_a_small_plan_stratum_is_drawn_whole_and_watch_fills_the_rest(self):
+        res = sample.draw(self.host(10, 5, 500), 100, 7, allow_single_host=True)
+        self.assertEqual(res["strata"], {"ACT": 10, "PLAN": 5, "WATCH": 85})
+
+    def test_a_small_watch_stratum_is_drawn_whole_and_plan_fills_the_rest(self):
+        res = sample.draw(self.host(10, 500, 5), 100, 7, allow_single_host=True)
+        self.assertEqual(res["strata"], {"ACT": 10, "PLAN": 85, "WATCH": 5})
+        self.assertEqual(len(res["rows"]), 100)
+
+    def test_with_many_act_rows_the_halves_are_still_equal(self):
+        res = sample.draw(self.host(300, 300, 300), 100, 7, allow_single_host=True)
+        self.assertEqual(res["strata"], {"ACT": 50, "PLAN": 25, "WATCH": 25})
+
+    def test_an_odd_size_is_met_exactly(self):
+        res = sample.draw(self.host(300, 300, 300), 101, 7, allow_single_host=True)
+        self.assertEqual(len(res["rows"]), 101)
+        self.assertEqual(res["strata"]["ACT"], 50)
+
+    def test_too_few_findings_overall_is_still_refused_unless_a_trial_draw(self):
+        with self.assertRaises(SystemExit) as cm:
+            sample.draw(self.host(10, 20, 30), 100, 7, allow_single_host=True)
+        self.assertIn("--allow-short", str(cm.exception))
+        self.assertEqual(len(sample.draw(self.host(10, 20, 30), 100, 7, allow_short=True, allow_single_host=True)["rows"]), 60)
+
+    def test_the_draw_is_still_deterministic(self):
+        a = sample.draw(self.host(18, 222, 1902), 100, 7, allow_single_host=True)["rows"]
+        b = sample.draw(self.host(18, 222, 1902), 100, 7, allow_single_host=True)["rows"]
+        self.assertEqual([r["id"] for r in a], [r["id"] for r in b])
+
+    def test_the_manifest_gives_the_population_sizes_the_weights_need(self):
+        res = sample.draw(self.host(18, 222, 1902), 100, 7, allow_single_host=True)
+        self.assertEqual(res["available"], {"ACT": 18, "PLAN": 222, "WATCH": 1902})
+
+
 class ResultCommandWeighted(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.d = self.tmp.name
 
-    def run_result(self, available, with_strata=True, unsure=()):
+    def run_result(self, available, with_strata=True, unsure=(), misses=True):
         rows = []
         for decision, n in (("ACT", 50), ("PLAN", 25), ("WATCH", 25)):
             rows += [{"id": f"{decision}{i}", "decision": decision} for i in range(n)]
         manifest = {"available_with_fix": available} if with_strata else {}
         path = os.path.join(self.d, "sample.json")
         json.dump({"manifest": manifest, "rows": rows}, open(path, "w"))
-        acts = {f"ACT{i}" for i in range(30)} | {"PLAN0", "PLAN1", "WATCH0"}
+        acts = {f"ACT{i}" for i in range(30)} | ({"PLAN0", "PLAN1", "WATCH0"} if misses else set())
         sheets = []
         for name in ("alice", "bob"):
             sp = os.path.join(self.d, f"{name}.csv")
@@ -283,8 +333,15 @@ class ResultCommandWeighted(unittest.TestCase):
         self.assertIn("estimated for the host", text)
         self.assertIn("50.0%", text)
         self.assertIn("in the sample", text)                                   # the unweighted number is still shown, said to be about the sample
-        self.assertIn("target 10% (unsure as defer, host estimate): point estimate NOT met", text)
+        self.assertIn("decision rule (unsure as defer): the lower end of the interval (13.2%) is above 10%: the score must change", text)
         self.assertAlmostEqual(out["weighted"]["unsure_as_defer"]["estimate"], 0.5)
+
+    def test_a_low_lower_end_requires_no_change_and_says_it_does_not_show_a_low_rate(self):
+        rc, text, out = self.run_result({"ACT": 18, "PLAN": 20, "WATCH": 30}, misses=False)
+        self.assertEqual(rc, 0)
+        self.assertIn("decision rule (unsure as defer): the lower end of the interval (0.0%) is not above 10%: the rule requires no change", text)
+        self.assertIn("does not show that the rate is under 10%", text)
+        self.assertRegex(text, r"\(upper end \d+\.\d%\)")
 
     def test_unsure_counted_as_act_gives_a_higher_estimate_for_the_host(self):
         rc, text, out = self.run_result({"ACT": 200, "PLAN": 1000, "WATCH": 1000}, unsure={"PLAN5", "PLAN6", "WATCH5"})
@@ -295,6 +352,7 @@ class ResultCommandWeighted(unittest.TestCase):
         rc, text, out = self.run_result(None, with_strata=False)
         self.assertEqual(rc, 0)
         self.assertIn("cannot be estimated for the host", text)
+        self.assertIn("the decision rule cannot be applied", text)
         self.assertNotIn("host estimate", text)
 
 
