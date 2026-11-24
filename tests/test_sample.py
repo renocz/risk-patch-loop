@@ -689,5 +689,75 @@ class SheetTest(unittest.TestCase):
             sample.parse_pairs(["a.csv"], "--reviewer")
 
 
+class DuplicateRowsTest(unittest.TestCase):
+    """On a real host `risk.json` holds the same (image, CVE, package) twice (one line per target or per installed copy). The draw used to refuse
+    the whole file; the population is the set of distinct findings, so duplicates collapse to one row, the one the score ranks highest."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.d = self.tmp.name
+        self.cwd = os.getcwd()
+        os.chdir(self.d)
+        self.addCleanup(os.chdir, self.cwd)
+        os.makedirs("docs")
+        open(sample.CRITERIA, "w").write("criteria")
+        patcher = mock.patch.dict(os.environ, {"RPL_CONFIG": os.path.join(self.d, "rpl.json")})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        json.dump({"state_dir": os.path.join(self.d, "state")}, open(os.path.join(self.d, "rpl.json"), "w"))
+
+    def load(self, rows, counted=None):
+        path = os.path.join(self.d, "risk.json")
+        write_risk(path, rows)
+        return sample.load_hosts([("h", path)], counted) if counted is not None else sample.load_hosts([("h", path)])
+
+    def test_identical_findings_become_one_row(self):
+        row = finding("img/a", "CVE-2026-0001", "WATCH", score=10)
+        self.assertEqual(len(self.load([row, dict(row)])["h"]), 1)
+
+    def test_the_row_kept_is_the_one_ranked_highest_whatever_the_order(self):
+        low = finding("img/a", "CVE-2026-0001", "WATCH", score=10)
+        high = dict(low, score=60, decision="ACT", fixed="9.9")
+        for rows in ([low, high], [high, low]):
+            kept = self.load(rows)["h"]
+            self.assertEqual([(r["score"], r["decision"], r["fixed"]) for r in kept], [(60, "ACT", "9.9")])
+
+    def test_a_tie_is_broken_by_the_content_not_the_order(self):
+        a = finding("img/a", "CVE-2026-0001", "PLAN", score=30)
+        b = dict(a, fixed="2.0")
+        self.assertEqual(self.load([a, b])["h"], self.load([b, a])["h"])
+
+    def test_the_collapsed_count_is_reported(self):
+        row = finding("img/a", "CVE-2026-0001", "WATCH", score=10)
+        other = finding("img/b", "CVE-2026-0002", "WATCH", score=10)
+        counted = {}
+        self.load([row, dict(row), dict(row), other], counted)
+        self.assertEqual(counted, {"h": 2})
+
+    def test_a_row_without_a_fix_is_not_a_duplicate_of_one_with_a_fix(self):
+        fixed = finding("img/a", "CVE-2026-0001", "WATCH", score=10)
+        nofix = dict(fixed, fixed="", decision="WATCH (no fix)")
+        counted = {}
+        rows = self.load([fixed, nofix], counted)["h"]
+        self.assertEqual((len(rows), counted), (1, {"h": 0}))
+
+    def test_draw_still_refuses_ids_that_are_twice_in_what_it_is_given(self):
+        row = dict(finding("img/a", "CVE-2026-0001", "ACT", score=60), host="h", id="same")
+        with self.assertRaises(SystemExit):
+            sample.draw({"h": [row, dict(row)]}, 10, 1, allow_short=True, allow_single_host=True)
+
+    def test_the_manifest_says_how_many_duplicates_were_collapsed(self):
+        rows = host_rows("x", 6, 6, 6)
+        rows.append(dict(rows[0]))
+        rows.append(dict(rows[7]))
+        path = os.path.join(self.d, "risk.json")
+        write_risk(path, rows)
+        out = os.path.join(self.d, "out")
+        args = sample.argparse.Namespace(host=[f"h={path}"], seed=3, size=18, out=out, allow_short=True, single_host=True)
+        self.assertEqual(sample.cmd_draw(args), 0)
+        self.assertEqual(json.load(open(os.path.join(out, "manifest.json")))["duplicates_collapsed"], {"h": 2})
+
+
 if __name__ == "__main__":
     unittest.main()

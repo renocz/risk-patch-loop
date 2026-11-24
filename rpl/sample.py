@@ -116,9 +116,22 @@ def parse_pairs(items, what):
     return pairs
 
 
-def load_hosts(pairs):
-    """{host: [rows with a known fix]}. Rows without a fix are left out: the ground truth needs 'a fix exists', so they
-    could never deserve ACT and would only cost labelling time without touching the rate."""
+def collapse_duplicates(rows):
+    """(rows, n): one row per id. On a real host `risk.json` holds the same (image, CVE, package) several times (one line per Trivy target or per
+    installed copy); the population of the measure is the set of distinct findings. The row kept is the one the score ranks highest, a tie
+    broken by the content of the row, so the result does not depend on the order of the file."""
+    best = {}
+    for r in rows:
+        key = (-(r.get("score") or 0), json.dumps(r, sort_keys=True))
+        if r["id"] not in best or key < best[r["id"]][0]:
+            best[r["id"]] = (key, r)
+    return [r for _, r in best.values()], len(rows) - len(best)
+
+
+def load_hosts(pairs, collapsed=None):
+    """{host: [rows with a known fix, distinct findings]}. Rows without a fix are left out: the ground truth needs 'a fix exists', so they
+    could never deserve ACT and would only cost labelling time without touching the rate. `collapsed`, a dict, receives how many duplicate
+    rows were folded into another, per host."""
     hosts = {}
     for name, path in pairs:
         try:
@@ -126,8 +139,10 @@ def load_hosts(pairs):
             rows = data["rows"]
         except (OSError, ValueError, KeyError, TypeError):
             raise SystemExit(f"{path}: not a risk.json written by 'rpl risk'")
-        hosts[name] = [dict(r, host=name, id=row_id(name, r.get("image", ""), r.get("cve", ""), r.get("pkg", "")))
-                       for r in rows if r.get("fixed")]
+        hosts[name], n = collapse_duplicates(
+            [dict(r, host=name, id=row_id(name, r.get("image", ""), r.get("cve", ""), r.get("pkg", ""))) for r in rows if r.get("fixed")])
+        if collapsed is not None:
+            collapsed[name] = n
     return hosts
 
 
@@ -306,11 +321,12 @@ def cmd_draw(args):
     if not os.path.exists(CRITERIA):
         raise SystemExit(f"{CRITERIA} is missing: the written criteria must exist, and be committed, before the draw")
     pairs = parse_pairs(args.host, "--host")
-    hosts = load_hosts(pairs)
+    collapsed = {}
+    hosts = load_hosts(pairs, collapsed)
     res = draw(hosts, args.size, args.seed, args.allow_short, getattr(args, "single_host", False))
     os.makedirs(args.out, exist_ok=True)
     manifest = {"rpl_version": __version__, "seed": args.seed, "size": len(res["rows"]), "requested": args.size,
-                "hosts": len(hosts), "single_host": len(hosts) < 2,
+                "hosts": len(hosts), "duplicates_collapsed": collapsed, "single_host": len(hosts) < 2,
                 "strata": res["strata"], "available_with_fix": res["available"],
                 "inputs": {name: sha256_file(path) for name, path in pairs},
                 "criteria_sha256": sha256_file(CRITERIA), "scoring": scoring_fingerprint(_config()), "scan_environment": scan_environment(_config()),
@@ -320,6 +336,8 @@ def cmd_draw(args):
     with open(os.path.join(args.out, "manifest.json"), "w") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=1, sort_keys=True)
     write_sheet(os.path.join(args.out, "sheet.csv"), blind_rows(res["rows"], args.seed))
+    if any(collapsed.values()):
+        print(f"{sum(collapsed.values())} duplicate row(s) of the same finding folded into one (the one ranked highest): {collapsed}")
     print(f"drawn {manifest['size']} findings from {len(hosts)} host(s): {res['strata']} (available with a fix: {res['available']})")
     if manifest["single_host"]:
         print("WARNING: one host only, written in manifest.json: the rate describes that host, not Docker hosts in general")

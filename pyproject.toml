@@ -1,6 +1,6 @@
 [project]
 name = "risk-patch-loop"
-version = "0.10.0"
+version = "0.10.1"
 description = "Exposure-aware vulnerability triage and verified, human-approved patching for Docker Compose hosts"
 readme = "README.md"
 requires-python = ">=3.9"
