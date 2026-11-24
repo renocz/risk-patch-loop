@@ -685,6 +685,94 @@ class Interactions(Base):
         self.assertEqual(sorted(self.calls[-2:]), sorted([self.A, self.B]))
 
 
+class ForeignStateFile(Base):
+    """A notifs.json that this tool did not write (another format, a list, text, an unreadable file) must never be destroyed: it is kept aside."""
+
+    def setUp(self):
+        super().setUp()
+        self.cfg_ = self.cfg([{"type": "webhook", "url": "https://hooks.example.test/x"}])
+        os.makedirs(self.cfg_["state_dir"], exist_ok=True)
+        self.path = os.path.join(self.cfg_["state_dir"], "notifs.json")
+
+    def put(self, content):
+        with open(self.path, "w") as f:
+            f.write(content)
+
+    def kept(self):
+        return sorted(n for n in os.listdir(self.cfg_["state_dir"]) if n.startswith("notifs.json.unreadable-"))
+
+    def read(self, name):
+        with open(os.path.join(self.cfg_["state_dir"], name)) as f:
+            return f.read()
+
+    def go(self):
+        return notify.deliver([EV], self.cfg_, lambda *a, **kw: 200, lambda: 1000.0)
+
+    def test_a_json_list_is_kept_aside_byte_for_byte_and_a_fresh_state_is_written(self):
+        original = json.dumps([{"id": 1, "msg": "queued"}, {"id": 2}])
+        self.put(original)
+        self.assertEqual(self.go()["delivered"], [EV["key"]])                    # the alert is not held up by it
+        (name,) = self.kept()
+        self.assertEqual(self.read(name), original)
+        self.assertEqual(list(self.state(self.cfg_)), [EV["key"]])
+
+    def test_text_that_is_not_json_is_kept_aside_too(self):
+        self.put("not json at all")
+        self.go()
+        (name,) = self.kept()
+        self.assertEqual(self.read(name), "not json at all")
+
+    def test_an_object_of_another_shape_keeps_its_keys(self):
+        self.put(json.dumps({"private-key-1": {"status": "sent", "n": 3}}))
+        self.go()
+        state = self.state(self.cfg_)
+        self.assertEqual(state["private-key-1"], {"status": "sent", "n": 3})
+        self.assertIn(EV["key"], state)
+        self.assertEqual(self.kept(), [])
+
+    def test_two_different_unreadable_files_are_both_kept(self):
+        self.put("first")
+        self.go()
+        self.put("second")
+        notify.deliver([dict(EV, key="other")], self.cfg_, lambda *a, **kw: 200, lambda: 1000.0)
+        self.assertEqual(sorted(self.read(n) for n in self.kept()), ["first", "second"])
+
+    def test_a_readable_state_is_never_moved(self):
+        self.go()
+        notify.deliver([dict(EV, key="second")], self.cfg_, lambda *a, **kw: 200, lambda: 1000.0)
+        self.assertEqual(self.kept(), [])
+        self.assertEqual(sorted(self.state(self.cfg_)), sorted([EV["key"], "second"]))
+
+    def test_a_missing_file_is_not_a_problem(self):
+        self.assertFalse(os.path.exists(self.path))
+        self.go()
+        self.assertEqual(self.kept(), [])
+
+    def test_a_file_this_account_cannot_read_is_kept_aside_not_overwritten(self):
+        """Another account's 0600 file, for example: reading it raises PermissionError."""
+        from unittest import mock
+        self.put(json.dumps({"someone": "elses"}))
+        real_open = open
+
+        def fake_open(file, *args, **kw):
+            if str(file) == self.path and not args:                              # the text reads of the state file
+                raise PermissionError(13, "denied")
+            return real_open(file, *args, **kw)
+        with mock.patch("builtins.open", fake_open):
+            self.assertEqual(self.go()["delivered"], [EV["key"]])
+        (name,) = self.kept()
+        self.assertEqual(json.load(real_open(os.path.join(self.cfg_["state_dir"], name))), {"someone": "elses"})
+
+    def test_the_notice_names_the_kept_file_and_never_a_secret(self):
+        import contextlib
+        import io
+        self.put("not json")
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.go()
+        self.assertIn("notifs.json.unreadable-", err.getvalue())
+
+
 class NightlyMissing(unittest.TestCase):
     def test_recent_run_gives_nothing(self):
         self.assertIsNone(notify.missing_run(1000.0, 1000.0 + 3600 * 20))
