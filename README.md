@@ -116,6 +116,8 @@ A group (for example a VPN container and the services behind it) is declared in 
                           "services": {"indexer": {"quiesce": "none"}}}}
 ```
 
+A service whose configuration directory holds a Unix socket that the application creates again at start (qBittorrent's `qBittorrent/ipc-socket` is one) is refused by the plan, which says why. Name that socket, and only that one, in `"ignore_sockets": ["qBittorrent/ipc-socket"]` under the service (paths relative to the mounted directory): the plan lists it as left out, it is part of the fingerprint, and a declared path that is not a socket, or any other special file, is still refused. A rollback restores the directory without it; the application creates it again.
+
 ```bash
 python -m rpl group --compose /srv/proj/compose.yaml --parent vpn --plan       # changes nothing; prints the plan and its fingerprint
 python -m rpl group --compose /srv/proj/compose.yaml --parent vpn --approve <fingerprint>
