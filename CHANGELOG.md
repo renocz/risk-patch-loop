@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.10.1 (2026-11-24)
+
+### False-negative measure: the draw no longer refuses a `risk.json` that holds the same finding twice
+- The first real draw (the plan of 24 November 2026, tag 0.10.0) stopped with "duplicate findings in the inputs": on the author's host `risk.json` holds the same (image, CVE, package) on several lines (one per Trivy target or per installed copy), and the draw refused the whole file. A measure that cannot run on a real host was a defect found by using it, not by tests, which only had unique rows.
+- Duplicates now collapse to one row before the draw, the one the score ranks highest (a tie broken by the content of the row, not by the order of the file); the population of the measure is the set of distinct findings. The manifest records `duplicates_collapsed` per host and `draw` prints it. The guard on identical ids in `draw()` stays. The score is untouched: `rpl/risk.py` and `rpl/inventory.py` are byte for byte those of 0.10.0, so the fingerprint of the score is the same.
+- 7 new tests (`DuplicateRowsTest`), 6 failing or erroring before (the seventh, the guard in `draw()`, pins what already held); of 5 removals of the rules, 5 fail a test. Suite 683, Python 3.11 here; CI covers 3.9 and 3.12. The README test count (EN and FR) is 683.
+- Not verified: on the author's real `risk.json`; how many rows collapse there; whether duplicates with a different fixed version should count as one finding (the choice made: yes, one finding).
+
 ### Draw plan
 - `docs/results.md` records, before the draw, the inputs of the measure on the author's host (scan environment, SHA-256 of the files), the way the gate list was derived from a private format (hosts that answered 401 only), the draw (size 100, seed from the tag object id), the labelling and the reading rules. Documentation only.
 
