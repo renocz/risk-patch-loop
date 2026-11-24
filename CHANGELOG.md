@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### notifs.json: a file this tool did not write is kept aside, never overwritten
+- `notify.deliver` read `notifs.json` as an object, and treated anything else (a JSON list, text, a file it could not read) as empty, then wrote its own state over it: another tool's state in the same directory (a service of the owner, another version) was destroyed. Found while checking the migration of the owner's production, which keeps its own `notifs.json` and `apply.lock` in its state directory. Such a file is now moved to `notifs.json.unreadable-<stamp of its content>` (two different files are never mixed), a notice goes to stderr, and a fresh state is started: the alert is not held up. An object of another shape keeps its keys and gets this tool's next to them. A file this account cannot read is kept aside too.
+- 8 new tests (`ForeignStateFile`), 4 of them failing or erroring before (the others pin what already held: an object keeps its keys, a readable state is never moved, a missing file is fine); of 6 removals of its rules, 5 fail a test and 1 survives (a renamed target that still starts with the same prefix). README (EN and FR): give `rpl` a state directory of its own; `apply.lock` is a plain `flock` on a fixed name. Suite 594, Python 3.11, 3.12, 3.13.
+- Not verified: any other tool's real files; two tools sharing `apply.lock`.
+
 ### Docs: AccuracySec measured, the apply duration and the real group read from the code
 - Measured on the host (24 November 2026): a one-minute `rpl watch` timer ran 25 times in 30 minutes without `AccuracySec` (gaps up to 92.6 s) and 31 times with `AccuracySec=1s` (gaps of 60 to 61 s): the cause of the missing runs is confirmed and the setting of the example unit works. `docs/trial/notify.md` has the numbers and the right way to read the setting (`-p AccuracyUSec` on systemd 252).
 - Three complete applies of the trial group took 3.5 to 3.6 s: the fixed cost of the tool, not a real apply. `docs/results.md` records what the code says about the real VPN group (only bind mounts under the compose directory are backed up; above `group_backup_max_mb` the plan is refused) and a computed bound for the 60-minute grace (about 2 x members x `health_timeout_s`); neither was run on that group.

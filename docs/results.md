@@ -287,6 +287,10 @@ By the owner's local agent on the same host (LXC container, root; Docker 29.10.0
 
 **Not tested:** an apply with a cold download, a configuration over 100 MiB, a dependant with a slow health check, a real VPN group; the duration of a restore, of an interrupted apply then resumed; `--plan` on the real group; `AccuracySec` with `OnCalendar=minutely`, `RandomizedDelaySec`, a loaded host, a user timer, another systemd or another account than root.
 
+### A state file that is not this tool's (24 November 2026)
+
+Seen from the owner's production: its state directory holds its own `groupes.json`, `registre.json`, `notifs.json`, `vm-attente.json` and `apply.lock`, and `rpl` writes `notifs.json` and `apply.lock` in its state directory too. Checked with the code on synthetic files: a `notifs.json` that is a JSON object keeps its foreign keys and receives `rpl`'s; one that is a list or text was REPLACED by `{"<key>": {...}}`, which would have destroyed the other tool's state. Fixed (the file is kept aside, see the CHANGELOG), tests first. Not checked: the real file of any other tool, and what happens when two tools `flock` the same `apply.lock`.
+
 ## What was not measured
 
 - No false-negative rate: nothing shows the score never ranks a dangerous finding low.

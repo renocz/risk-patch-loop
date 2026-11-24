@@ -18,6 +18,8 @@ Rules, each covered by a test:
   - an event may carry "critical": True (an apply that never finished, a failed rollback, an unreadable state, a missing or failed nightly run, a patch
     that needs a human): critical events are sent first and the run's time budget never holds one; the others wait for the next run when it is used up;
   - a `Retry-After` of a failed event lengthens its wait when it is longer than the calendar, never past one hour; the longest of the failing channels counts;
+  - a notifs.json that is not an object this tool can read (another format, a list, text) is kept aside as notifs.json.unreadable-<stamp> and a fresh
+    state is started, never overwritten;
   - one message per event key (the key carries the version, e.g. "fix:app-1:CVE-2026-0001:2.4.1");
   - secrets are read from files that must not be readable by group or others, and are never printed, logged or put in the state file;
   - the webhook resolves the host ONCE, refuses private, loopback and link-local addresses (unless allow_private), connects to the
@@ -36,6 +38,7 @@ import json
 import os
 import socket
 import ssl
+import sys
 import time
 from urllib.parse import urlsplit
 
@@ -187,10 +190,32 @@ def _locked(lock_path):
             os.close(fd)                                  # closing the descriptor releases the lock
 
 
+def _keep_unreadable(path):
+    """If the state file exists but is not an object this tool can read (another format, a list, text, no permission), move it aside instead of
+    overwriting it: it may be someone else's state (another version of the tool, a service of the owner), and what it holds cannot be rebuilt.
+    The alert is not held up by it: a fresh state is started. The name carries a stamp of the content, so two different files are never mixed."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError):
+        pass
+    kept = f"{path}.unreadable-{file_stamp(path)}"
+    try:
+        os.replace(path, kept)
+        print(f"notifs.json could not be read as this tool's state: kept as {os.path.basename(kept)}, a fresh state is started", file=sys.stderr)
+    except OSError:
+        pass                                              # cannot move it: it is replaced as before, and an alert is still never stopped
+
+
 def _commit(path, key, st):
     """Record the state of ONE key. The file is read again under the lock and only this key is replaced, so what another process recorded in
     the meantime (a delivery mark, a queued event) is kept. The sends themselves are outside the lock."""
     with _locked(path + ".lock"):
+        _keep_unreadable(path)
         state = _load(path)
         state[key] = st
         tmp = f"{path}.{os.getpid()}.tmp"
