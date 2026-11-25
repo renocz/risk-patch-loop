@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Test suite: no test depends on the umask any more
+- `TreeCopy.test_a_copy_reads_back_identical_and_a_changed_byte_or_mode_is_seen` failed under `umask 077` (found by a supervised deployment run as root): the file it creates was already mode 0600, so its own change to 0600 was invisible. It now sets the starting mode explicitly. The whole suite passes under umask 077, 022 and 027 (692 tests, Python 3.11); the red run under 077 was reproduced before the change. A defect of the test, not of the tool.
+
 ### Labelling record
 - `docs/results.md` records, before the tie-break and before any rate, the author's sheet (100 `defer`, a criterion other than the written ones, said so), the damage a spreadsheet did to the returned file and its mechanical repair, the panel (three families, one attempt each, counts only), the result run that stopped without a third reviewer, and how the final number will and will not be read. Documentation only.
 

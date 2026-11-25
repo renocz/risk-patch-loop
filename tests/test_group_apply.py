@@ -1164,6 +1164,7 @@ class TreeCopy(unittest.TestCase):
             os.makedirs(os.path.join(src, "sub"))
             with open(os.path.join(src, "sub", "f"), "w") as f:
                 f.write("abc")
+            os.chmod(os.path.join(src, "sub", "f"), 0o644)                    # explicit: the mode must not depend on the umask of whoever runs the suite
             os.chmod(os.path.join(src, "sub"), 0o750)
             manifest = groupapply.copy_tree(src, dst)
             self.assertEqual(groupapply.read_tree(dst), manifest)
